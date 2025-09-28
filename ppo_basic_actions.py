@@ -34,37 +34,36 @@ def to_gif_frame(obs):
     # if still grayscale 2D, OK for GIF; otherwise ensure HWC
     return arr
 
-
-# ---- Wrapper: draw a new RNG seed every episode ----
-class RandomSeedOnReset(gym.Wrapper):
-    def __init__(self, env, rng=None):
+# ---- Wrapper: always reset with the same given seed ----
+class FixedSeedOnReset(gym.Wrapper):
+    def __init__(self, env, seed: int):
         super().__init__(env)
-        self.rng = np.random.default_rng() if rng is None else rng
+        self._seed = int(seed)
 
-    # Gymnasium-style signature helps readability, but **kwargs also works
     def reset(self, *, seed=None, options=None, **kwargs):
-        # Always override any incoming seed from VecEnv
+        # Ignore incoming seed and force a fixed one every episode
         kwargs.pop("seed", None)
-        new_seed = int(self.rng.integers(0, 2**31 - 1))
-        return self.env.reset(seed=new_seed, options=options, **kwargs)
+        return self.env.reset(seed=self._seed, options=options, **kwargs)
 
-def make_env(rng=None):
+
+def make_env(seed: int):
     def _thunk():
         env = CraftaxTopDownEnv(
+            seed=seed,               # initialize env RNG deterministically
             render_mode=None,
             reward_items=[],
-            done_item="wood",
+            done_item="wood_pickaxe",
             include_base_reward=False,
         )
         env = TimeLimit(env, max_episode_steps=25)
-        env = RandomSeedOnReset(env, rng=rng)  # different seed every reset
+        env = FixedSeedOnReset(env, seed=seed)  # keep the SAME seed every reset
         return env
     return _thunk
 
 if __name__ == "__main__":
-    base_rng = np.random.default_rng(12345)
+    SEED = 1000  # single training seed; every episode uses this seed
 
-    train_env = DummyVecEnv([make_env(rng=base_rng)])
+    train_env = DummyVecEnv([make_env(seed=SEED)])
     train_env = VecTransposeImage(train_env)  # HWC -> CHW for CnnPolicy
     train_env = VecMonitor(train_env)
 
@@ -73,10 +72,10 @@ if __name__ == "__main__":
     # model = PPO(
     #     policy="CnnPolicy",
     #     env=train_env,
+    #     seed=SEED,  # set SB3/torch RNGs too for full determinism
     #     verbose=1,
     #     tensorboard_log="./tb_logs_ppo_craftax",
     #     device="auto",
-
     # )
 
     # model.learn(
@@ -87,8 +86,8 @@ if __name__ == "__main__":
     # )
     # model.save("ppo_craftax_wood_ppo_actions")
 
-    # -------- Eval vec env (identical preprocessing & random-seed-per-episode) --------
-    eval_env = DummyVecEnv([make_env(rng=np.random.default_rng(6887))])
+    # -------- Eval vec env (choose a seed; use same wrapper for fixed-seed eval) --------
+    eval_env = DummyVecEnv([make_env(seed=SEED)])
     eval_env = VecTransposeImage(eval_env)
     eval_env = VecMonitor(eval_env)
 
@@ -97,11 +96,16 @@ if __name__ == "__main__":
 
     done = False
     steps = 0
-    while not done and steps < 100:
+    while not done and steps < 10:
         action, _ = model.predict(obs, deterministic=True)
         obs, rewards, dones, infos = eval_env.step(action)
         images.append(to_gif_frame(obs))
         done = bool(dones[0])
-        steps += 1
 
-    imageio.mimsave("craftax_run_test_wood_easy_ppo_actions_2.gif", images, fps=5)
+        print("Step:", steps, "Action:", action, "Reward:", rewards, "Done:", done)
+
+        steps += 1
+    
+    images.append(to_gif_frame(obs))
+
+    imageio.mimsave(f"craftax_run_test_wood_easy_ppo_actions_{done}.gif", images, fps=1)

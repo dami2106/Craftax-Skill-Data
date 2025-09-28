@@ -19,18 +19,22 @@ import gymnasium as gym
 from gymnasium.wrappers import TimeLimit, RecordEpisodeStatistics
 from sb3_contrib.common.wrappers import ActionMasker
 
-# reseed wrapper (same as before, with seed override)
-class RandomSeedOnReset(gym.Wrapper):
-    def __init__(self, env, rng=None):
+# Fixed seed wrapper: seeds env only on the first reset, then leaves it unchanged
+class FixedSeedOnFirstReset(gym.Wrapper):
+    def __init__(self, env, seed: int):
         super().__init__(env)
-        self.rng = np.random.default_rng() if rng is None else rng
+        self._initial_seed = int(seed)
+        self._seeded_once = False
 
     def reset(self, *, seed=None, options=None, **kwargs):
-        kwargs.pop("seed", None)
-        new_seed = int(self.rng.integers(0, 2**31 - 1))
-        return self.env.reset(seed=new_seed, options=options, **kwargs)
+        # On the very first reset, force the provided seed; afterwards, do not reseed.
+        if not self._seeded_once:
+            self._seeded_once = True
+            return self.env.reset(seed=self._initial_seed, options=options, **kwargs)
+        # Preserve caller-provided seed semantics on subsequent calls, but default to None
+        return self.env.reset(seed=seed, options=options, **kwargs)
 
-def make_options_env(*, rng, render_mode=None, K=5, max_episode_steps=25):
+def make_options_env(*, seed: int, render_mode=None, K=5, max_episode_steps=25):
     def _thunk():
         base = CraftaxTopDownEnv(
             render_mode=render_mode,
@@ -54,8 +58,8 @@ def make_options_env(*, rng, render_mode=None, K=5, max_episode_steps=25):
 
         # 2) Add outer wrappers afterwards
         capped   = TimeLimit(masked, max_episode_steps=max_episode_steps)
-        reseeded = RandomSeedOnReset(capped, rng=rng)
-        logged   = RecordEpisodeStatistics(reseeded)
+        fixed    = FixedSeedOnFirstReset(capped, seed=seed)
+        logged   = RecordEpisodeStatistics(fixed)
         return logged
     return _thunk
 
@@ -66,9 +70,9 @@ def mask_fn(env):
 
 if __name__ == "__main__":
     K = 5
-    base_rng = np.random.default_rng(12345)
+    TRAIN_SEED = 1000  # set your fixed training seed here
 
-    train_env = DummyVecEnv([make_options_env(rng=base_rng, render_mode=None, K=K)])
+    train_env = DummyVecEnv([make_options_env(seed=TRAIN_SEED, render_mode=None, K=K)])
     train_env = VecTransposeImage(train_env) 
     train_env = VecMonitor(train_env)
 
@@ -81,11 +85,9 @@ if __name__ == "__main__":
     )
 
 
-    eval_env_vec = DummyVecEnv([make_options_env(
-        rng=np.random.default_rng(9876),
-        render_mode=None,  
-        K=K
-    )])
+    # For evaluation you can reuse the same seed or choose a different fixed seed
+    EVAL_SEED = TRAIN_SEED
+    eval_env_vec = DummyVecEnv([make_options_env(seed=EVAL_SEED, render_mode=None, K=K)])
     eval_env_vec = VecTransposeImage(eval_env_vec)
     eval_env_vec = VecMonitor(eval_env_vec)
 
