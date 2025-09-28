@@ -155,13 +155,13 @@ class OptionsOnTopEnv(gym.Env):
             # termination checks (always via OBS)
             if term or trunc:
                 terminated, truncated = bool(term), bool(trunc)
-                print(f"Option {skill_name} ended due to env done after {inner_steps} steps.")
+                # print(f"Option {skill_name} ended due to env done after {inner_steps} steps.")
                 break
             if should_terminate(self.models, self._as_uint8_frame(obs_local), skill_name):
-                print(f"Option {skill_name} terminated after {inner_steps} steps due to model.")
+                # print(f"Option {skill_name} terminated after {inner_steps} steps due to model.")
                 break
             if inner_steps >= self.max_skill_len:
-                print(f"Option {skill_name} reached max_skill_len={self.max_skill_len}, stopping.")
+                # print(f"Option {skill_name} reached max_skill_len={self.max_skill_len}, stopping.")
                 break
         
             
@@ -193,7 +193,7 @@ import imageio
 
 def print_options_mask(tag, mask, start, count):
     opts = mask[start:start+count]
-    print(f"{tag} options mask: {opts.tolist()}")
+    # print(f"{tag} options mask: {opts.tolist()}")
 
 if __name__ == "__main__":
     # Build envs
@@ -243,10 +243,10 @@ if __name__ == "__main__":
                 skill_name = None
         skill_label = f"{skill_idx}" + (f" ({skill_name})" if skill_name else "")
 
-        print(f"{tag}: running OPTION {skill_label} [action id {action_id}], valid={valid}")
+        # print(f"{tag}: running OPTION {skill_label} [action id {action_id}], valid={valid}")
         obs, r, terminated, truncated, info = env.step(action_id)
         frames.append(obs.copy())
-        print(f"{tag}: reward={r}, terminated={terminated}, truncated={truncated}")
+        # print(f"{tag}: reward={r}, terminated={terminated}, truncated={truncated}")
 
         mask_after = env.action_masks()
         print_options_mask(f"AFTER {tag}", mask_after, option_start, num_options)

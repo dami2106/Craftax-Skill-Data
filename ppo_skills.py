@@ -91,19 +91,20 @@ if __name__ == "__main__":
 
     eval_cb = MaskableEvalCallback(
         eval_env_vec,
-        eval_freq=10,
-        n_eval_episodes=10,
+        eval_freq=500,
+        n_eval_episodes=5,
         deterministic=True,
     )
 
     model.learn(
-        total_timesteps=500_000,
+        total_timesteps=100_000,
         tb_log_name="ppo_wood_options",   # TB subdir
         log_interval=10,
         progress_bar=True,
         callback=eval_cb,
     )
-    obs, info = eval_env_vec.reset()
+    model.save("ppo_craftax_wood_ppo_options")
+    obs = eval_env_vec.reset()
     frames = [obs.copy()]
 
     done = False
@@ -112,9 +113,9 @@ if __name__ == "__main__":
         # Pull masks from the FIRST sub-env (vectorized)
         masks = eval_env_vec.envs[0].action_masks()
         action, _ = model.predict(obs, action_masks=masks, deterministic=True)
-        obs, reward, terminated, truncated, info = eval_env_vec.step(action)
+        obs, reward, terminated, info = eval_env_vec.step(action)
         frames.append(obs.copy())
-        done = bool(terminated[0] or truncated[0])
+        done = bool(terminated[0])
         steps += 1
 
     imageio.mimsave("craftax_ppo_options_eval.gif", frames, fps=5)
