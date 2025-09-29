@@ -39,7 +39,7 @@ def make_options_env(*, seed: int, render_mode=None, K=5, max_episode_steps=25):
         base = CraftaxTopDownEnv(
             render_mode=render_mode,
             reward_items=[],
-            done_item="wood",
+            done_item="wood_pickaxe",
             include_base_reward=False,
             return_uint8=True,
         )
@@ -66,6 +66,33 @@ def make_options_env(*, seed: int, render_mode=None, K=5, max_episode_steps=25):
 
 def mask_fn(env):
     return env.action_masks()
+
+
+# Helper: unwrap wrappers to reach the env that exposes `action_masks()`
+def get_action_masks(env_or_vec):
+    """Return the current action mask from a (possibly vectorized and wrapped) env.
+
+    Works with DummyVecEnv and common Gym wrappers by walking down `.env` until
+    an object with `action_masks()` is found.
+    """
+    # If a VecEnv is provided, grab the first sub-env
+    env = env_or_vec.envs[0] if hasattr(env_or_vec, "envs") else env_or_vec
+
+    # Walk through wrapper chain
+    cur = env
+    while True:
+        if hasattr(cur, "action_masks") and callable(getattr(cur, "action_masks")):
+            return cur.action_masks()
+        if hasattr(cur, "env"):
+            cur = cur.env
+        else:
+            break
+
+    # Final check (in case the base env itself had it but loop ended)
+    if hasattr(cur, "action_masks") and callable(getattr(cur, "action_masks")):
+        return cur.action_masks()
+
+    raise AttributeError("No action_masks() found in env wrapper stack.")
 
 
 if __name__ == "__main__":
@@ -100,12 +127,12 @@ if __name__ == "__main__":
 
     model.learn(
         total_timesteps=100_000,
-        tb_log_name="ppo_wood_options",   # TB subdir
+        tb_log_name="ppo_wood_pick_options",   # TB subdir
         log_interval=10,
         progress_bar=True,
         callback=eval_cb,
     )
-    model.save("ppo_craftax_wood_ppo_options")
+    model.save("ppo_craftax_wood_pick_ppo_options")
     obs = eval_env_vec.reset()
     frames = [obs.copy()]
 
@@ -113,14 +140,14 @@ if __name__ == "__main__":
     steps = 0
     while not done and steps < 100:
         # Pull masks from the FIRST sub-env (vectorized)
-        masks = eval_env_vec.envs[0].action_masks()
+        masks = get_action_masks(eval_env_vec)
         action, _ = model.predict(obs, action_masks=masks, deterministic=True)
         obs, reward, terminated, info = eval_env_vec.step(action)
         frames.append(obs.copy())
         done = bool(terminated[0])
         steps += 1
 
-    imageio.mimsave("craftax_ppo_options_eval.gif", frames, fps=5)
+    imageio.mimsave("craftax_ppo_wood_pick_options_eval.gif", frames, fps=5)
 
     last_info = info[0] if isinstance(info, (list, tuple)) else info
     print("Eval done.")
