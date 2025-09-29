@@ -10,7 +10,7 @@ from sb3_contrib.common.wrappers import ActionMasker  # <-- ensures masks used i
 from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage, VecMonitor
 
 from top_down_env_gymnasium import CraftaxTopDownEnv
-from top_down_env_gymnasium_options import OptionsOnTopEnv
+from top_down_env_gymnasium_hierarchy import OptionsOnTopEnv
 
 import imageio
 
@@ -34,7 +34,7 @@ class FixedSeedOnFirstReset(gym.Wrapper):
         # Preserve caller-provided seed semantics on subsequent calls, but default to None
         return self.env.reset(seed=seed, options=options, **kwargs)
 
-def make_options_env(*, seed: int, render_mode=None, K=5, max_episode_steps=100):
+def make_options_env(*, seed: int, render_mode=None, max_episode_steps=100):
     def _thunk():
         base = CraftaxTopDownEnv(
             render_mode=render_mode,
@@ -46,7 +46,6 @@ def make_options_env(*, seed: int, render_mode=None, K=5, max_episode_steps=100)
         core = OptionsOnTopEnv(
             base,
             num_primitives=16,
-            num_options=K,
             gamma=0.99,
             max_skill_len=50,
         )
@@ -96,10 +95,9 @@ def get_action_masks(env_or_vec):
 
 
 if __name__ == "__main__":
-    K = 5
     TRAIN_SEED = 1000  # set your fixed training seed here
 
-    train_env = DummyVecEnv([make_options_env(seed=TRAIN_SEED, render_mode=None, K=K)])
+    train_env = DummyVecEnv([make_options_env(seed=TRAIN_SEED, render_mode=None)])
     train_env = VecTransposeImage(train_env) 
     train_env = VecMonitor(train_env)
 
@@ -114,7 +112,7 @@ if __name__ == "__main__":
 
     # For evaluation you can reuse the same seed or choose a different fixed seed
     EVAL_SEED = TRAIN_SEED
-    eval_env_vec = DummyVecEnv([make_options_env(seed=EVAL_SEED, render_mode=None, K=K)])
+    eval_env_vec = DummyVecEnv([make_options_env(seed=EVAL_SEED, render_mode=None)])
     eval_env_vec = VecTransposeImage(eval_env_vec)
     eval_env_vec = VecMonitor(eval_env_vec)
 
@@ -127,12 +125,12 @@ if __name__ == "__main__":
 
     model.learn(
         total_timesteps=100_000,
-        tb_log_name="ppo_wood_pick_options",   # TB subdir
+        tb_log_name="ppo_wood_pick_hierarchy",   # TB subdir
         log_interval=10,
         progress_bar=True,
         callback=eval_cb,
     )
-    model.save("ppo_craftax_wood_pick_options")
+    model.save("ppo_craftax_wood_pick_hierarchy")
     obs = eval_env_vec.reset()
     frames = [obs.copy()]
 
@@ -147,7 +145,7 @@ if __name__ == "__main__":
         done = bool(terminated[0])
         steps += 1
 
-    imageio.mimsave("craftax_ppo_wood_pick_options_eval.gif", frames, fps=5)
+    imageio.mimsave("craftax_ppo_wood_pick_hierarchy_eval.gif", frames, fps=5)
 
     last_info = info[0] if isinstance(info, (list, tuple)) else info
     print("Eval done.")

@@ -56,7 +56,7 @@ def make_env(seed: int):
             done_item="wood_pickaxe",
             include_base_reward=False,
         )
-        env = TimeLimit(env, max_episode_steps=25)
+        env = TimeLimit(env, max_episode_steps=100)
         env = FixedSeedOnReset(env, seed=seed)  # keep the SAME seed every reset
         return env
     return _thunk
@@ -100,7 +100,7 @@ if __name__ == "__main__":
         progress_bar=True,
         callback=eval_callback,
     )
-    model.save("ppo_craftax_wood_ppo_actions")
+    model.save("ppo_craftax_wood_pick_actions")
 
     # -------- Eval vec env (choose a seed; use same wrapper for fixed-seed eval) --------
     
@@ -110,7 +110,7 @@ if __name__ == "__main__":
 
     done = False
     steps = 0
-    while not done and steps < 10:
+    while not done and steps < 100:
         action, _ = model.predict(obs, deterministic=True)
         obs, rewards, dones, infos = eval_env.step(action)
         images.append(to_gif_frame(obs))
@@ -122,4 +122,4 @@ if __name__ == "__main__":
     
     images.append(to_gif_frame(obs))
 
-    imageio.mimsave(f"craftax_run_test_wood_easy_ppo_actions_{done}.gif", images, fps=1)
+    imageio.mimsave(f"craftax_ppo_wood_pick_actions_eval.gif", images, fps=1)

@@ -300,4 +300,240 @@ def bc_policy(models, state, skill):
     action, probs = act_greedy(model, normalizer, device, state)
     return action
 
+"""
+Hierarchy utilities
+"""
 
+
+import hashlib
+from typing import Any, Dict, List, Optional
+
+def _canonicalize_tree(node: Dict[str, Any]) -> str:
+    if "symbol" in node:
+        return f"S:{node['symbol']}"
+    pid = node.get("production", None)
+    children = node.get("children", [])
+    sig_children = ",".join(_canonicalize_tree(c) for c in children)
+    return f"P:{pid}[{sig_children}]"
+
+def _iter_production_nodes(node: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out = []
+    if "production" in node:
+        out.append(node)
+    for c in node.get("children", []):
+        out.extend(_iter_production_nodes(c))
+    return out
+
+def _leaf_symbols_inorder(node: Dict[str, Any]) -> List[str]:
+    if "symbol" in node:
+        return [str(node["symbol"])]
+    seq = []
+    for c in node.get("children", []):
+        seq.extend(_leaf_symbols_inorder(c))
+    return seq
+
+def load_unique_hierarchies(hierarchies_dir: str) -> List[Dict[str, Any]]:
+    uniq = {}
+    if not os.path.isdir(hierarchies_dir):
+        print(f"[WARN] hierarchies_dir not found: {hierarchies_dir}")
+        return []
+    for fname in os.listdir(hierarchies_dir):
+        if not fname.lower().endswith(".json"):
+            continue
+        fpath = os.path.join(hierarchies_dir, fname)
+        try:
+            with open(fpath, "r") as f:
+                tree = json.load(f)
+            sig = _canonicalize_tree(tree)
+            h = hashlib.sha1(sig.encode("utf-8")).hexdigest()
+            if h not in uniq:
+                uniq[h] = tree
+        except Exception as e:
+            print(f"[WARN] Skipping {fname}: {e}")
+    return list(uniq.values())
+
+
+
+# ===== NEW: compile productions into existing banks =====
+
+def compile_productions_into_skill_bank(
+    models: Dict[str, Any],
+    hierarchies: List[Dict[str, Any]],
+    symbol_map: Dict[str, str],
+) -> None:
+    """
+    For each production node P:
+      - Create a pseudo-skill 'Production_<P>'
+      - start model := start PU of first leaf skill
+      - end model   := end  PU of last  leaf skill
+      - bc model    := sentinel ('__COMPOSITE__', [child_skill_names...])
+    Mutates `models` in-place:
+      models['skills'] += [composite_names]
+      models['bc_models'][name] = ('__COMPOSITE__', sequence)
+      models['termination_models'][name] = termination_models[last_leaf]
+      models['start_models'] += [{'skill': name, 'clf': ..., 'thr': ..., 'meta': ...}]  # alias of first leaf
+    """
+    # Reindex helpers
+    start_by_skill = {m["skill"]: m for m in models["start_models"]}
+    end_by_skill   = models["termination_models"]
+    skills_set     = set(models["skills"])
+
+    # Ensure composite runtime dict exists
+    if "composite_runtime" not in models:
+        models["composite_runtime"] = {}
+
+    composite_names = []
+
+    for tree in hierarchies:
+        for pnode in _iter_production_nodes(tree):
+            pid = int(pnode["production"])
+            leaves = _leaf_symbols_inorder(pnode)
+            if not leaves:
+                continue
+
+            try:
+                seq = [symbol_map[str(s)] for s in leaves]
+            except KeyError as e:
+                print(f"[WARN] Missing symbol in symbol_map: {e}; skipping Production_{pid}")
+                continue
+
+            first_leaf, last_leaf = seq[0], seq[-1]
+
+            if first_leaf not in start_by_skill:
+                print(f"[WARN] No start PU for '{first_leaf}' (needed by Production_{pid}); skipping.")
+                continue
+            if last_leaf not in end_by_skill:
+                print(f"[WARN] No end PU for '{last_leaf}' (needed by Production_{pid}); skipping.")
+                continue
+
+            name = f"Production_{pid}"
+
+            # Avoid duplicates if multiple hierarchies contain the same production
+            if name in models["bc_models"] and name in models["termination_models"]:
+                continue
+
+            # 1) BC model sentinel
+            models["bc_models"][name] = ("__COMPOSITE__", seq)
+
+            # 2) Termination = alias of last leaf's end model
+            models["termination_models"][name] = end_by_skill[last_leaf]
+
+            # 3) Start = add an alias entry using first leaf's start PU
+            #    NOTE: available_skills() already uses models["start_models"], so we just append.
+            first_leaf_start = start_by_skill[first_leaf]
+            models["start_models"].append({
+                "skill": name,
+                "clf": first_leaf_start["clf"],
+                "thr": first_leaf_start["thr"],
+                "meta": dict(first_leaf_start.get("meta", {})),
+            })
+
+            # 4) Expose in skills list (after primitives)
+            if name not in skills_set:
+                models["skills"].append(name)
+                skills_set.add(name)
+                composite_names.append(name)
+
+    if composite_names:
+        # deterministic order optional
+        # leave as appended to preserve discovery order
+        print(f"[INFO] Added composites: {', '.join(composite_names)}")
+
+
+# ===== EDIT: bc_policy to handle composite sentinels =====
+
+def bc_policy_hierarchy(models, state, skill):
+    entry = models["bc_models"][skill]
+
+    # Composite sentinel?
+    if isinstance(entry, tuple) and entry and entry[0] == "__COMPOSITE__":
+        seq = entry[1]  # list of leaf skill names in order
+        name = skill
+
+        # progress tracker
+        rt = models.setdefault("composite_runtime", {}).setdefault(name, {"idx": 0})
+        idx = int(rt["idx"])
+
+        # Guard: if already complete, hold last leaf's action (or return a STOP if you have one)
+        if idx >= len(seq):
+            last = seq[-1]
+            return bc_policy(models, state, last)
+
+        # If current sub-skill has terminated, advance
+        cur = seq[idx]
+        if should_terminate(models, state, cur):
+            idx += 1
+            rt["idx"] = idx
+            if idx >= len(seq):
+                # Finished; hold last skill action
+                return bc_policy(models, state, seq[-1])
+            cur = seq[idx]
+
+        # Act with current sub-skill
+        return bc_policy(models, state, cur)
+
+    # ---- Primitive case (unchanged) ----
+    assert state.max() > 1.0  # allow uint8 input
+    state = np.asarray(state).astype(np.float32) / 255.0
+    model, normalizer, device, n_actions = entry
+    action, probs = act_greedy(model, normalizer, device, state)
+    return action
+
+
+def load_all_models_hierarchy(
+    skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],
+    hierarchies_dir: Optional[str] = None,
+    symbol_map: Optional[Dict[str, str]] = None,
+):
+    bc_models = {}
+    for skill in skill_list:
+        ckpt_path = os.path.join('Traces/stone_pickaxe_easy', 'bc_checkpoints', f'{skill}_policy_cnn.pt')
+        bc_models[skill] = load_policy(ckpt_path)
+
+    artifacts = joblib.load('Traces/stone_pickaxe_easy/pca_models/pca_model_750.joblib')
+    scaler = artifacts['scaler']
+    pca = artifacts['pca']
+    n_features_expected = scaler.mean_.shape[0]
+
+    pu_start_models = load_pu_start_models('Traces/stone_pickaxe_easy/pu_start_models')
+
+    pu_end_models = {}
+    for skill in skill_list:
+        try:
+            pu_end_models[skill] = load_pu_end_model('Traces/stone_pickaxe_easy/pu_end_models', skill)
+        except FileNotFoundError:
+            print(f"[WARN] No PU end model for skill '{skill}'")
+
+
+    models = {
+        "skills": list(skill_list),
+        "bc_models": bc_models,
+        "termination_models": pu_end_models,
+        "start_models": pu_start_models,
+        "pca_model": {'scaler': scaler, 'pca': pca, 'n_features_expected': n_features_expected}
+    }
+
+    # === NEW: compile unique hierarchies into this bank ===
+    if hierarchies_dir and symbol_map:
+        uniq = load_unique_hierarchies(hierarchies_dir)
+        compile_productions_into_skill_bank(models, uniq, symbol_map)
+
+    return models
+
+
+if __name__ == "__main__":
+    models = load_all_models_hierarchy(
+        skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],
+        hierarchies_dir = 'Traces/stone_pickaxe_easy/hierarchy_data/Simple',
+        symbol_map = {
+            "0": "stone",
+            "1": "stone_pickaxe",
+            "2": "table",
+            "3": "wood",
+            "4": "wood_pickaxe",
+        }
+    )
+    print(f"Final skills: {models['skills']}")
+    print(f"BC models: {list(models['bc_models'].keys())}")
+    print(f"Termination models: {list(models['termination_models'].keys())}")
+    print(f"Start models: {[m['skill'] for m in models['start_models']]}")
