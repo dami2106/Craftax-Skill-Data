@@ -21,8 +21,7 @@ class OptionsOnTopEnv(gym.Env):
     def __init__(
         self,
         base_env,                     # an instance of CraftaxTopDownEnv
-        num_primitives: int = 17,    
-        num_options: int = 5,         # set >0 if you have options
+        num_primitives: int = 16,    
         gamma: float = 0.99,
         max_skill_len: int = 50,      # safety cap for option rollout
     ):
@@ -31,9 +30,13 @@ class OptionsOnTopEnv(gym.Env):
         self.gamma = float(gamma)
         self.max_skill_len = int(max_skill_len)
 
+        # Models / skills
+        self.models = load_all_models()
+        self.skills = self.models["skills"]
+
         # ---- Action space mapping
         self.num_primitives = int(num_primitives)
-        self.num_options = int(num_options)
+        self.num_options = int(len(self.skills)) if self.skills is not None else 0
         assert self.num_primitives > 0, "Need at least 1 primitive action"
 
         # Ensure we don't exceed underlying primitive count
@@ -55,9 +58,7 @@ class OptionsOnTopEnv(gym.Env):
         self.action_space.seed(self._seed)
         self.observation_space.seed(self._seed)
 
-        # Models / skills
-        self.models = load_all_models()
-        self.skills = self.models["skills"][:self.num_options]  # exposed subset
+        
 
     # ---------- utilities ----------
     @staticmethod

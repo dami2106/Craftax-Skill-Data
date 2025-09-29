@@ -159,7 +159,7 @@ class OptionsOnTopEnv(gym.Env):
         while True:
             # print(f" Option {skill_name} step {inner_steps+1}")
             frame = self._as_uint8_frame(obs_local)
-            prim_action = int(bc_policy(self.models, frame, skill_name))
+            prim_action = int(bc_policy_hierarchy(self.models, frame, skill_name))
             if prim_action < 0 or prim_action >= P:
                 raise error.InvalidAction(f"bc_policy returned invalid primitive {prim_action} (P={P})")
 

@@ -1,4 +1,4 @@
-# train_maskable_ppo.py
+# PPO_Skills.py
 import numpy as np
 import gymnasium as gym
 from gymnasium.wrappers import TimeLimit, RecordEpisodeStatistics
@@ -19,20 +19,9 @@ import gymnasium as gym
 from gymnasium.wrappers import TimeLimit, RecordEpisodeStatistics
 from sb3_contrib.common.wrappers import ActionMasker
 
-# Fixed seed wrapper: seeds env only on the first reset, then leaves it unchanged
-class FixedSeedOnFirstReset(gym.Wrapper):
-    def __init__(self, env, seed: int):
-        super().__init__(env)
-        self._initial_seed = int(seed)
-        self._seeded_once = False
+from option_helpers import FixedSeedAlways, to_gif_frame
 
-    def reset(self, *, seed=None, options=None, **kwargs):
-        # On the very first reset, force the provided seed; afterwards, do not reseed.
-        if not self._seeded_once:
-            self._seeded_once = True
-            return self.env.reset(seed=self._initial_seed, options=options, **kwargs)
-        # Preserve caller-provided seed semantics on subsequent calls, but default to None
-        return self.env.reset(seed=seed, options=options, **kwargs)
+
 
 def make_options_env(*, seed: int, render_mode=None, K=5, max_episode_steps=100):
     def _thunk():
@@ -46,7 +35,6 @@ def make_options_env(*, seed: int, render_mode=None, K=5, max_episode_steps=100)
         core = OptionsOnTopEnv(
             base,
             num_primitives=16,
-            num_options=K,
             gamma=0.99,
             max_skill_len=50,
         )
@@ -58,7 +46,7 @@ def make_options_env(*, seed: int, render_mode=None, K=5, max_episode_steps=100)
 
         # 2) Add outer wrappers afterwards
         capped   = TimeLimit(masked, max_episode_steps=max_episode_steps)
-        fixed    = FixedSeedOnFirstReset(capped, seed=seed)
+        fixed    = FixedSeedAlways(capped, seed=seed)
         logged   = RecordEpisodeStatistics(fixed)
         return logged
     return _thunk
@@ -126,7 +114,7 @@ if __name__ == "__main__":
     )
 
     model.learn(
-        total_timesteps=100_000,
+        total_timesteps=500_000,
         tb_log_name="ppo_wood_pick_options",   # TB subdir
         log_interval=10,
         progress_bar=True,
@@ -134,21 +122,20 @@ if __name__ == "__main__":
     )
     model.save("ppo_craftax_wood_pick_options")
     obs = eval_env_vec.reset()
-    frames = [obs.copy()]
+    # Convert the initial observation to a GIF-safe frame (HWC uint8) to match subsequent frames
+    frames = [to_gif_frame(obs)]
 
     done = False
     steps = 0
     while not done and steps < 100:
-        # Pull masks from the FIRST sub-env (vectorized)
         masks = get_action_masks(eval_env_vec)
         action, _ = model.predict(obs, action_masks=masks, deterministic=True)
         obs, reward, terminated, info = eval_env_vec.step(action)
-        frames.append(obs.copy())
+        frames.append(to_gif_frame(obs))
         done = bool(terminated[0])
+
+        print("Step:", steps, "Action:", action, "Reward:", reward, "Done:", done)
+
         steps += 1
 
-    imageio.mimsave("craftax_ppo_wood_pick_options_eval.gif", frames, fps=5)
-
-    last_info = info[0] if isinstance(info, (list, tuple)) else info
-    print("Eval done.")
-    print("Last episode reward:", last_info.get("episode", {}).get("r", None))
+    imageio.mimsave("craftax_ppo_wood_pick_options_eval.gif", frames, fps=1)
