@@ -1,51 +1,48 @@
 import os
 import json
 import numpy as np
-from sklearn.utils import shuffle
-from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.svm import LinearSVC
-from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import (
     precision_recall_curve,
     precision_recall_fscore_support,
-    classification_report,
     confusion_matrix,
+    average_precision_score,
 )
-from skill_helpers import *
-from joblib import dump
-import pandas as pd 
-from math import isnan
-from pathlib import Path
-from sklearn.model_selection import GroupShuffleSplit
-from sklearn.model_selection import GroupShuffleSplit, StratifiedGroupKFold, GroupKFold
+from sklearn.model_selection import GroupShuffleSplit, StratifiedGroupKFold
+from sklearn.svm import SVC  # use SVC(probability=True); LinearSVC has no predict_proba
 from pulearn import ElkanotoPuClassifier, BaggingPuClassifier
-from sklearn.svm import SVC  # use SVC (probability=True); LinearSVC has no predict_proba
+from joblib import dump
+import pandas as pd
 
+from skill_helpers import *  # assumes build_startability_dataset, get_unique_skills etc.
+
+# ----------------------------
+# Global config
+# ----------------------------
 SEED = 42
 rng = np.random.default_rng(SEED)
 
 dir_ = 'Traces/stone_pickaxe_easy'
-
-# Directory to save trained start models & metadata
 models_dir = os.path.join(dir_, 'pu_start_models')
 os.makedirs(models_dir, exist_ok=True)
 files = os.listdir(os.path.join(dir_, 'groundTruth'))
 
-
+# ----------------------------
+# PU builder
+# ----------------------------
 def make_pu_clf(
     method: str = "elkanoto",         # "elkanoto" | "bagging"
     C: float = 10.0,
-    kernel: str = "rbf",              # "linear" or "rbf" are good starts
-    gamma: str | float = "scale",
+    kernel: str = "rbf",              # "linear" or "rbf"
+    gamma: str | float = "scale",     # ignored by linear kernel (safe to pass)
     hold_out_ratio: float = 0.2,      # used by Elkanoto
     n_estimators: int = 15,           # used by BaggingPuClassifier
     seed: int = SEED,
 ):
     """
     Builds a PU-learning estimator that exposes predict_proba.
-    Any scikit-learn classifier can be used underneath; we pick SVC(probability=True).
+    Base classifier: SVC(probability=True). Standardized inputs.
     """
     base = make_pipeline(
         StandardScaler(),
@@ -61,6 +58,9 @@ def make_pu_clf(
 
     return pu_estimator
 
+# ----------------------------
+# Threshold selection helpers
+# ----------------------------
 def best_threshold_from_pr(y_true, p_scores):
     prec, rec, thr = precision_recall_curve(y_true, p_scores)
     f1s = 2 * prec * rec / (prec + rec + 1e-12)
@@ -75,63 +75,117 @@ def best_threshold_from_pr(y_true, p_scores):
     best_idx = int(np.nanargmax(valid)) + 1  # shift back into full f1s indexing
     return float(thr[best_idx - 1]), float(f1s[best_idx])
 
-
-def fit_with_threshold_grouped_pu(X, y, groups, *,
-                                  method="elkanoto",
-                                  C=10.0,
-                                  kernel="rbf",
-                                  gamma="scale",
-                                  hold_out_ratio=0.2,
-                                  n_estimators=15,
-                                  seed=SEED):
+def safe_n_splits(y, groups, requested=5):
     """
-    Train a PU model on a group-split train/val; pick threshold by max F1 on the val set,
-    then refit on *all* provided (X, y) for final model.
-    y must be 1 for positive, 0 for unlabeled (no true negatives).
+    Ensure we don't request more CV folds than the number of groups
+    or than the minority-class count.
     """
-    # Inner val split by episode (no test leakage)
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=seed)
-    tr_idx, val_idx = next(gss.split(X, y, groups))
-    X_tr, X_val = X[tr_idx], X[val_idx]
-    y_tr, y_val = y[tr_idx], y[val_idx]
+    n_groups = len(np.unique(groups))
+    pos = int((y == 1).sum())
+    neg = int((y == 0).sum())
+    # For StratifiedGroupKFold feasibility: at least one positive per fold
+    upper_by_class = max(1, min(pos, neg))
+    return max(2, min(requested, n_groups, upper_by_class))
 
-    # Build & fit PU estimator on the training fold
-    pu = make_pu_clf(
-        method=method, C=C, kernel=kernel, gamma=gamma,
-        hold_out_ratio=hold_out_ratio, n_estimators=n_estimators, seed=seed
-    )
-    pu.fit(X_tr, y_tr)
+# ----------------------------
+# Group-aware CV: model selection by PR-AUC (Average Precision)
+# ----------------------------
+def cv_score_for_params(X, y, groups, *, method, C, kernel, gamma,
+                        hold_out_ratio=0.2, n_estimators=15, seed=SEED, requested_splits=5):
+    n_splits = safe_n_splits(y, groups, requested_splits)
+    gkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    ap_scores = []
+    for tr, va in gkf.split(X, y, groups):
+        pu = make_pu_clf(method=method, C=C, kernel=kernel, gamma=gamma,
+                         hold_out_ratio=hold_out_ratio, n_estimators=n_estimators, seed=seed)
+        pu.fit(X[tr], y[tr])
+        proba = pu.predict_proba(X[va])[:, 1]
+        ap_scores.append(average_precision_score(y[va], proba))
+    return float(np.mean(ap_scores)) if len(ap_scores) else float("nan")
 
-    # Pick threshold on group-held-out validation
-    val_proba = pu.predict_proba(X_val)[:, 1]
-    thr, val_f1 = best_threshold_from_pr(y_val, val_proba)
+# Search space includes linear kernel (Req #5)
+METHODS = ["elkanoto", "bagging"]
+Cs      = [0.5, 1, 3, 10]
+KERNELS = ["linear", "rbf"]
+GAMMAS  = ["scale", 0.1, 0.01]   # only used for rbf (safe to pass for linear)
+BAG_N   = [10, 25]               # for bagging
+HOLDOUT = [0.1, 0.2, 0.3]        # for elkanoto
 
-    # Refit on *all* provided data (train split of outer loop), same hyperparams
-    pu_final = make_pu_clf(
-        method=method, C=C, kernel=kernel, gamma=gamma,
-        hold_out_ratio=hold_out_ratio, n_estimators=n_estimators, seed=seed
-    )
-    pu_final.fit(X, y)
+def pick_best_hparams(X, y, groups, seed=SEED):
+    best = None  # (ap, params_dict)
+    for method in METHODS:
+        for C in Cs:
+            for kernel in KERNELS:
+                gamma_list = GAMMAS if kernel == "rbf" else ["scale"]
+                for gamma in gamma_list:
+                    if method == "bagging":
+                        for n_estimators in BAG_N:
+                            ap = cv_score_for_params(
+                                X, y, groups, method=method, C=C, kernel=kernel, gamma=gamma,
+                                n_estimators=n_estimators, seed=seed
+                            )
+                            params = dict(method=method, C=C, kernel=kernel, gamma=gamma,
+                                          n_estimators=n_estimators)
+                            if (best is None) or (ap > best[0]):
+                                best = (ap, params)
+                    else:
+                        for hold_out_ratio in HOLDOUT:
+                            ap = cv_score_for_params(
+                                X, y, groups, method=method, C=C, kernel=kernel, gamma=gamma,
+                                hold_out_ratio=hold_out_ratio, seed=seed
+                            )
+                            params = dict(method=method, C=C, kernel=kernel, gamma=gamma,
+                                          hold_out_ratio=hold_out_ratio)
+                            if (best is None) or (ap > best[0]):
+                                best = (ap, params)
+    # Fallback if search failed (shouldn't happen)
+    if best is None:
+        best = (float("nan"), dict(method="elkanoto", C=10.0, kernel="rbf", gamma="scale", hold_out_ratio=0.2))
+    return best  # (best_ap, best_params)
 
-    return pu_final, float(thr), float(val_f1)
+# ----------------------------
+# Stable threshold via grouped CV (median of fold-wise best F1 thresholds)
+# ----------------------------
+def cv_threshold(X, y, groups, params, seed=SEED, requested_splits=5):
+    n_splits = safe_n_splits(y, groups, requested_splits)
+    gkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    thrs = []
+    val_f1s = []
+    for tr, va in gkf.split(X, y, groups):
+        pu = make_pu_clf(**params, seed=seed)
+        pu.fit(X[tr], y[tr])
+        proba = pu.predict_proba(X[va])[:, 1]
+        thr, f1 = best_threshold_from_pr(y[va], proba)
+        thrs.append(thr)
+        val_f1s.append(f1)
+    if len(thrs) == 0:
+        return 0.5, float("nan")
+    return float(np.median(thrs)), float(np.nanmean(val_f1s))
 
+# ----------------------------
+# Train final PU on the full training split (per skill)
+# ----------------------------
+def fit_final_pu(X, y, *, params, seed=SEED):
+    pu = make_pu_clf(**params, seed=seed)
+    pu.fit(X, y)
+    return pu
 
+# ----------------------------
+# Main training / evaluation loop
+# ----------------------------
 results = {}
 skills = get_unique_skills(dir_, files)
 
-# Pick a PU method and base SVC hyperparams once (tweak as needed)
-PU_METHOD = "elkanoto"   # or "bagging"
-PU_C      = 10.0
-PU_KERNEL = "rbf"        # try "linear" if you want speed/simplicity
-PU_GAMMA  = "scale"
-
 for skill in skills:
+    # Load dataset
     X, y, groups = build_startability_dataset(dir_, skill, files, features_dirname='pca_features_750')
 
-    rng = np.random.RandomState(SEED)
-    perm = rng.permutation(len(X))
+    # Shuffle for reproducibility
+    rng_np = np.random.RandomState(SEED)
+    perm = rng_np.permutation(len(X))
     X, y, groups = X[perm], y[perm], groups[perm]
 
+    # Grouped Train/Test split
     gss = GroupShuffleSplit(n_splits=1, test_size=0.1, random_state=SEED)
     train_idx, test_idx = next(gss.split(X, y, groups))
     X_train, X_test = X[train_idx], X[test_idx]
@@ -142,38 +196,43 @@ for skill in skills:
     print("train balance:", np.bincount(y_train))
     print("test  balance:",  np.bincount(y_test))
 
-    # NEW: PU fit + threshold
-    clf, thr, val_f1 = fit_with_threshold_grouped_pu(
-        X_train, y_train, groups_train,
-        method=PU_METHOD, C=PU_C, kernel=PU_KERNEL, gamma=PU_GAMMA,
-        hold_out_ratio=0.2, n_estimators=15, seed=SEED
-    )
+    # (1) Group-aware HParam search with PR-AUC
+    best_ap, best_params = pick_best_hparams(X_train, y_train, groups_train, seed=SEED)
+    print(f"[{skill}] Best AP={best_ap:.4f} with params={best_params}")
 
-    # Inspect probabilities and counts at some thresholds
+    # (2) Stable threshold via CV (median of per-fold best F1)
+    thr_cv, mean_val_f1 = cv_threshold(X_train, y_train, groups_train, best_params, seed=SEED)
+    print(f"[{skill}] CV-median threshold={thr_cv:.3f} (mean val F1≈{mean_val_f1:.3f})")
+
+    # Fit final PU on all training data using best params
+    clf = fit_final_pu(X_train, y_train, params=best_params, seed=SEED)
+
+    # Inspect probabilities & evaluate on held-out test using the CV threshold
     proba_test = clf.predict_proba(X_test)[:, 1]
     print("min/max prob:", float(proba_test.min()), float(proba_test.max()))
     for t in [0.5, 0.4, 0.3, 0.2, 0.1]:
         preds_t = (proba_test >= t).astype(int)
         print(t, int(preds_t.sum()))
-    print("Chosen threshold (from PR/F1 on val):", thr, " (val F1=", f"{val_f1:.4f}", ")")
+    print("Chosen threshold (CV median of F1-best):", thr_cv)
 
-    # Evaluate at chosen threshold
-    y_pred = (proba_test >= thr).astype(int)
+    y_pred = (proba_test >= thr_cv).astype(int)
     precision, recall, f1, _ = precision_recall_fscore_support(
         y_test, y_pred, average="binary", zero_division=0
     )
     cm = confusion_matrix(y_test, y_pred, labels=[0, 1])
 
     results[skill] = {
-        "threshold": thr,
+        "threshold": float(thr_cv),
         "precision": float(precision),
         "recall": float(recall),
         "f1": float(f1),
         "confusion_matrix": cm,
-        "val_f1": float(val_f1)
+        "val_f1": float(mean_val_f1),
+        "best_ap": float(best_ap),
+        "best_params": best_params
     }
 
-    # Persist model + metadata (unchanged)
+    # Persist model + metadata
     model_path = os.path.join(models_dir, f"{skill}_clf.joblib")
     meta_path  = os.path.join(models_dir, f"{skill}_meta.json")
     try:
@@ -181,24 +240,25 @@ for skill in skills:
         with open(meta_path, 'w') as f:
             json.dump({
                 'skill': skill,
-                'threshold': thr,
-                'val_f1': val_f1,
-                'test_precision': precision,
-                'test_recall': recall,
-                'test_f1': f1,
+                'threshold': float(thr_cv),
+                'cv_mean_val_f1': float(mean_val_f1),
+                'best_ap': float(best_ap),
+                'best_params': best_params,
+                'test_precision': float(precision),
+                'test_recall': float(recall),
+                'test_f1': float(f1),
                 'n_train_pos': int((y_train == 1).sum()),
-                'n_train_neg': int((y_train == 0).sum()),  # these are UNLABELED in PU terms
+                'n_train_unl': int((y_train == 0).sum()),  # unlabeled in PU terms
                 'n_test_pos': int((y_test == 1).sum()),
-                'n_test_neg': int((y_test == 0).sum()),
+                'n_test_unl': int((y_test == 0).sum()),
                 'seed': SEED,
-                'pu_method': PU_METHOD,
-                'svc_kernel': PU_KERNEL,
-                'svc_C': PU_C,
-                'svc_gamma': PU_GAMMA
             }, f, indent=2)
     except Exception as e:
         print(f"[WARN] Failed to save model/metadata for skill {skill}: {e}")
 
+# ----------------------------
+# Aggregated reporting
+# ----------------------------
 rows = []
 tot_tn = tot_fp = tot_fn = tot_tp = 0
 
@@ -209,14 +269,14 @@ for skill, res in results.items():
     tot_tn += int(tn); tot_fp += int(fp); tot_fn += int(fn); tot_tp += int(tp)
 
     support_pos = int(tp + fn)
-    support_neg = int(tn + fp)
-    support_all = support_pos + support_neg
+    support_unl = int(tn + fp)
+    support_all = support_pos + support_unl
     acc = (tp + tn) / support_all if support_all else float("nan")
 
     rows.append({
         "skill": skill,
         "pos_support": support_pos,
-        "neg_support": support_neg,
+        "unl_support": support_unl,
         "threshold": res["threshold"],
         "precision": res["precision"],
         "recall": res["recall"],
@@ -229,10 +289,8 @@ for skill, res in results.items():
 overall_support = tot_tp + tot_fp + tot_fn + tot_tn
 overall_precision = (tot_tp / (tot_tp + tot_fp)) if (tot_tp + tot_fp) else 0.0
 overall_recall    = (tot_tp / (tot_tp + tot_fn)) if (tot_tp + tot_fn) else 0.0
-if (overall_precision + overall_recall) > 0:
-    overall_f1 = 2 * overall_precision * overall_recall / (overall_precision + overall_recall)
-else:
-    overall_f1 = 0.0
+overall_f1 = (2 * overall_precision * overall_recall / (overall_precision + overall_recall)
+              if (overall_precision + overall_recall) > 0 else 0.0)
 overall_accuracy  = (tot_tp + tot_tn) / overall_support if overall_support else float("nan")
 
 # Macro (mean across skills)
@@ -246,12 +304,10 @@ print("\n" + "="*80)
 print("PER-SKILL METRICS (sorted by F1 desc)")
 print("="*80)
 
-
 df = pd.DataFrame(rows)
 df = df.sort_values("f1", ascending=False)
-disp_cols = ["skill", "pos_support", "neg_support", "threshold",
-                "precision", "recall", "f1", "accuracy", "tp", "fp", "fn"]
-# Round numeric columns for readability
+disp_cols = ["skill", "pos_support", "unl_support", "threshold",
+             "precision", "recall", "f1", "accuracy", "tp", "fp", "fn"]
 for c in ["threshold", "precision", "recall", "f1", "accuracy"]:
     df[c] = df[c].astype(float).round(3)
 print(df[disp_cols].to_string(index=False))
@@ -264,18 +320,18 @@ try:
     with open(metrics_json, 'w') as f:
         json.dump({
             'overall': {
-                'support': overall_support,
-                'tp': tot_tp, 'fp': tot_fp, 'fn': tot_fn, 'tn': tot_tn,
-                'precision': overall_precision,
-                'recall': overall_recall,
-                'f1': overall_f1,
-                'accuracy': overall_accuracy
+                'support': int(overall_support),
+                'tp': int(tot_tp), 'fp': int(tot_fp), 'fn': int(tot_fn), 'tn': int(tot_tn),
+                'precision': float(overall_precision),
+                'recall': float(overall_recall),
+                'f1': float(overall_f1),
+                'accuracy': float(overall_accuracy)
             },
             'macro': {
-                'precision': macro_precision,
-                'recall': macro_recall,
-                'f1': macro_f1,
-                'accuracy': macro_accuracy
+                'precision': float(macro_precision),
+                'recall': float(macro_recall),
+                'f1': float(macro_f1),
+                'accuracy': float(macro_accuracy)
             }
         }, f, indent=2)
 except Exception as e:
