@@ -205,10 +205,10 @@ if __name__ == "__main__":
         include_base_reward=False,
         return_uint8=True,
     )
-    env = OptionsOnTopEnv(base_env=base, num_primitives=17, num_options=5, gamma=0.99)
+    env = OptionsOnTopEnv(base_env=base, num_primitives=16,  gamma=0.99)
 
     # Reproducibility
-    seed = 0
+    seed = 100
     random.seed(seed)
     np.random.seed(seed)
 
@@ -223,7 +223,7 @@ if __name__ == "__main__":
     option_start = num_primitives
 
     # Sequence of skill indices within options
-    skills_seq = [0, 0, 0, 4, 4, 0, 0, 2, 2]
+    skills_seq = [0, 0, 0, 0, 4, 4, 4]
 
     # Print mask BEFORE any option
     mask = env.action_masks()

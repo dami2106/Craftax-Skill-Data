@@ -157,11 +157,14 @@ class OptionsOnTopEnv(gym.Env):
 
         
         while True:
-            # print(f" Option {skill_name} step {inner_steps+1}")
+            print(f" Option {skill_name} step {inner_steps+1}")
             frame = self._as_uint8_frame(obs_local)
             prim_action = int(bc_policy_hierarchy(self.models, frame, skill_name))
             if prim_action < 0 or prim_action >= P:
                 raise error.InvalidAction(f"bc_policy returned invalid primitive {prim_action} (P={P})")
+
+            print("  -> primitive action", prim_action)
+
 
             obs_local, r, term, trunc, info = self.env.step(prim_action)
             last_info = info
@@ -221,73 +224,83 @@ if __name__ == "__main__":
         include_base_reward=False,
         return_uint8=True,
     )
-    env = OptionsOnTopEnv(base_env=base, num_primitives=17, num_options=5, gamma=0.99)
+    env = OptionsOnTopEnv(base_env=base, num_primitives=16, gamma=0.99)
 
-    # Reproducibility
-    seed = 0
-    random.seed(seed)
-    np.random.seed(seed)
-
-    # Reset and capture first frame
-    frames = []
-    obs, info = env.reset(seed=seed)
-    frames.append(obs.copy())
-
-    # Identify option range
-    num_primitives = getattr(env, "num_primitives", 17)
-    num_options = getattr(env, "num_options", 5)
+    # Identify option range (constant across seeds)
+    num_primitives = getattr(env, "num_primitives", 16)
+    num_options = getattr(env, "num_options")
+    print("Number of primitives:", num_primitives)
+    print("Number of options:", num_options)
+    print("Skills:", env.skills)
     option_start = num_primitives
 
-    # Sequence of skill indices within options
-    skills_seq = [0, 0, 0, 4, 4, 0, 0, 2, 2]
+    # Sequence of skill indices within options (kept constant across seeds)
+    skills_seq = [0,0 , 4 ]
+    # skills_seq = [7]
 
-    # Print mask BEFORE any option
-    mask = env.action_masks()
-    print_options_mask("BEFORE first run", mask, option_start, num_options)
+    # Run for 10 random seeds
+    seeds = list(range(10))
+    all_rewards_by_seed = {}
 
-    rewards = []
+    for seed in seeds:
+        print(f"\n=== Running seed {seed} ===")
+        # Reproducibility per seed
+        random.seed(seed)
+        np.random.seed(seed)
 
-    def run_skill(skill_idx, tag):
-        # nonlocal obs
-        action_id = option_start + skill_idx
-        mask = env.action_masks()
-        valid = bool(mask[action_id]) if action_id < len(mask) else False
-        skill_name = None
-        if hasattr(env, "skills"):
-            try:
-                skill_name = env.skills[skill_idx]
-            except Exception:
-                skill_name = None
-        skill_label = f"{skill_idx}" + (f" ({skill_name})" if skill_name else "")
-
-        # print(f"{tag}: running OPTION {skill_label} [action id {action_id}], valid={valid}")
-        obs, r, terminated, truncated, info = env.step(action_id)
+        # Reset and capture first frame
+        frames = []
+        obs, info = env.reset(seed=seed)
         frames.append(obs.copy())
-        # print(f"{tag}: reward={r}, terminated={terminated}, truncated={truncated}")
 
-        mask_after = env.action_masks()
-        print_options_mask(f"AFTER {tag}", mask_after, option_start, num_options)
+        # Print mask BEFORE any option for this seed
+        mask = env.action_masks()
+        print_options_mask("BEFORE first run", mask, option_start, num_options)
 
-        if terminated or truncated:
-            print(f"{tag}: episode ended → resetting")
-            obs, _ = env.reset()
-            frames.append(obs.copy())
-        
-        print("===========")  # blank line
-        return r
-    
+        rewards = []
 
-    # Execute the sequence
-    for i, s in enumerate(skills_seq, 1):
-        r = run_skill(s, f"Run {i}")
-        rewards.append(r)
+        def run_skill(skill_idx, tag):
+            action_id = option_start + skill_idx
+            mask_local = env.action_masks()
+            valid = bool(mask_local[action_id]) if action_id < len(mask_local) else False
+            skill_name = None
+            if hasattr(env, "skills"):
+                try:
+                    skill_name = env.skills[skill_idx]
+                except Exception:
+                    skill_name = None
+            skill_label = f"{skill_idx}" + (f" ({skill_name})" if skill_name else "")
 
-    # Save GIF
-    seq_str = "-".join(map(str, skills_seq))
-    rewards_str = "_".join(str(float(r)) for r in rewards)  # cast to float for clean printing
-    out_path = f"craftax_skills_{seq_str}_seed_{seed}_rewards_{rewards_str}.gif"
-    imageio.mimsave(out_path, frames, fps=5)
-    print(f"Saved GIF to: {out_path}")
+            print(f"{tag}: running OPTION {skill_label} [action id {action_id}], valid={valid}")
+            obs_local, r, terminated, truncated, info_local = env.step(action_id)
+            frames.append(obs_local.copy())
+            print(f"{tag}: reward={r}, terminated={terminated}, truncated={truncated}")
+
+            mask_after = env.action_masks()
+            print_options_mask(f"AFTER {tag}", mask_after, option_start, num_options)
+
+            if terminated or truncated:
+                print(f"{tag}: episode ended → resetting")
+                obs_reset, _ = env.reset()
+                frames.append(obs_reset.copy())
+            
+            print("===========")  # blank line
+            return r
+
+        # Execute the sequence for this seed
+        for i, s in enumerate(skills_seq, 1):
+            r = run_skill(s, f"Run {i}")
+            rewards.append(r)
+
+        # Save GIF per seed
+        seq_str = "-".join(map(str, skills_seq))
+        rewards_str = "_".join(str(float(r)) for r in rewards)  # cast to float for clean printing
+        out_path = f"craftax_skills_{seq_str}_seed_{seed}_rewards_{rewards_str}.gif"
+        imageio.mimsave(out_path, frames, fps=5)
+        print(f"Saved GIF to: {out_path}")
+
+        # Store rewards
+        all_rewards_by_seed[seed] = rewards
 
 # if __name__ == "__main__":
 #     base = CraftaxTopDownEnv(
