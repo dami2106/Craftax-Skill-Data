@@ -104,12 +104,12 @@ def cv_score_for_params(X, y, groups, *, method, C, kernel, gamma,
     return float(np.mean(ap_scores)) if len(ap_scores) else float("nan")
 
 # Search space includes linear kernel (Req #5)
-METHODS = ["elkanoto", "bagging"]
-Cs      = [0.5, 1, 3, 10]
-KERNELS = ["linear", "rbf"]
-GAMMAS  = ["scale", 0.1, 0.01]   # only used for rbf (safe to pass for linear)
-BAG_N   = [10, 25]               # for bagging
-HOLDOUT = [0.1, 0.2, 0.3]        # for elkanoto
+METHODS = ["elkanoto"]
+Cs      = [10]
+KERNELS = ["rbf"]
+GAMMAS  = ["scale"]   # only used for rbf (safe to pass for linear)
+BAG_N   = [10, 25]     # for bagging
+HOLDOUT = [0.2]        # for elkanoto
 
 def pick_best_hparams(X, y, groups, seed=SEED):
     best = None  # (ap, params_dict)

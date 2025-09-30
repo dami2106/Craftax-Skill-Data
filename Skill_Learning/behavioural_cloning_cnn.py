@@ -168,7 +168,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-dir_ = '../Craftax/Traces/stone_pickaxe_easy'
+dir_ = 'Traces/stone_pickaxe_easy'
 files = os.listdir(os.path.join(dir_, 'groundTruth'))
 
 unique_skills = get_unique_skills(dir_, files)
@@ -237,13 +237,16 @@ val_loader   = DataLoader(val_ds,   batch_size=128, shuffle=False, pin_memory=no
 test_loader  = DataLoader(test_ds,  batch_size=128, shuffle=False, pin_memory=not use_mps, num_workers=4)
 
 device = torch.device('cuda' if torch.cuda.is_available() else ('mps' if use_mps else 'cpu'))
+
+print("Using device:", device)
+
 model = PolicyCNN(n_actions=n_actions).to(device)   # <-- NEW MODEL
 
 criterion = nn.CrossEntropyLoss()
 opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
 
 best_val = float('inf'); patience=10; bad=0
-for epoch in range(60):  # CNN converges slower per step; start with ~60-100
+for epoch in range(150):  # CNN converges slower per step; start with ~60-100
     # train
     model.train()
     total = 0.0
