@@ -38,7 +38,7 @@ class CraftaxTopDownEnv(gym.Env):
         self.return_uint8 = return_uint8
 
         # --- Base Craftax env
-        self.env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", auto_reset=True)
+        self.env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", auto_reset=False)
         self.env_params = self.env.default_params.replace(
             max_timesteps=100000,
             day_length=99999,

@@ -6,20 +6,127 @@ import joblib
 import json 
 from joblib import load as joblib_load
 import gymnasium as gym
+# import torchvision
+import glob
+
+# Optional: only import torchvision if we actually need a ResNet
+_RESNET_IMPORTED = False
 
 # --- must match your training definitions ---
+# class ImageNormalizer:
+#     def __init__(self, mean, std):
+#         self.mean = torch.tensor(mean, dtype=torch.float32).view(3,1,1)
+#         self.std  = torch.clamp(torch.tensor(std, dtype=torch.float32).view(3,1,1), min=1e-3)
+#     def __call__(self, x):  # x: [3,H,W] in [0,1]
+#         return (x - self.mean) / self.std
+
+# class ConvBlock(torch.nn.Module):
+#     def __init__(self, c_in, c_out, k=3, s=1, p=1):
+#         super().__init__()
+#         self.conv = torch.nn.Conv2d(c_in, c_out, kernel_size=k, stride=s, padding=p, bias=False)
+#         self.bn   = torch.nn.BatchNorm2d(c_out)  # or GroupNorm if you switched
+#         self.act  = torch.nn.GELU()
+#     def forward(self, x):
+#         return self.act(self.bn(self.conv(x)))
+
+# class PolicyCNN(torch.nn.Module):
+#     def __init__(self, n_actions=16):
+#         super().__init__()
+#         self.stem = torch.nn.Sequential(
+#             ConvBlock(3, 32, k=7, s=2, p=3),
+#             ConvBlock(32, 32),
+#             torch.nn.MaxPool2d(2),
+#         )
+#         self.stage2 = torch.nn.Sequential(
+#             ConvBlock(32, 64),
+#             ConvBlock(64, 64),
+#             torch.nn.MaxPool2d(2),
+#         )
+#         self.stage3 = torch.nn.Sequential(
+#             ConvBlock(64, 128),
+#             ConvBlock(128, 128),
+#             torch.nn.MaxPool2d(2),
+#         )
+#         self.stage4 = torch.nn.Sequential(
+#             ConvBlock(128, 256),
+#             ConvBlock(256, 256),
+#         )
+#         self.head = torch.nn.Linear(256, n_actions)
+
+#     def forward(self, x):
+#         x = self.stem(x)
+#         x = self.stage2(x)
+#         x = self.stage3(x)
+#         x = self.stage4(x)
+#         x = F.adaptive_avg_pool2d(x, 1)
+#         x = torch.flatten(x, 1)
+#         return self.head(x)
+
+# # ---- inference helpers ----
+
+# def load_policy(ckpt_path, device=None):
+#     """Load model + normalizer from a saved training checkpoint."""
+#     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#     ckpt = torch.load(ckpt_path, map_location=device)
+#     n_actions = int(ckpt['n_actions'])
+#     model = PolicyCNN(n_actions=n_actions).to(device)
+#     model.load_state_dict(ckpt['state_dict'])
+#     model.eval()
+#     normalizer = ImageNormalizer(ckpt['mean'], ckpt['std'])
+#     return model, normalizer, device, n_actions
+
+# def preprocess_frame(frame_hw3, normalizer, target=256):
+#     """
+#     frame_hw3: numpy array [H,W,3], float32 in [0,1]
+#     returns torch tensor [1,3,target,target]
+#     """
+#     assert frame_hw3.ndim == 3 and frame_hw3.shape[2] == 3
+#     x = torch.from_numpy(np.transpose(frame_hw3, (2,0,1))).float()   # [3,H,W]
+#     x = F.interpolate(x.unsqueeze(0), size=(target, target), mode='bilinear', align_corners=False).squeeze(0)  # [3,T,T]
+#     x = normalizer(x)
+#     return x.unsqueeze(0)  # [1,3,T,T]
+
+# @torch.no_grad()
+# def act_greedy(model, normalizer, device, frame_hw3):
+#     """
+#     Returns (action_id, probs) where probs is a numpy array length n_actions.
+#     """
+#     x = preprocess_frame(frame_hw3, normalizer)            # [1,3,256,256]
+#     x = x.to(device)
+#     logits = model(x)                                      # [1,n_actions]
+#     probs = torch.softmax(logits, dim=-1).squeeze(0)       # [n_actions]
+#     action = int(torch.argmax(probs).item())
+#     return action, probs.cpu().numpy()
+
+# @torch.no_grad()
+# def act_sample(model, normalizer, device, frame_hw3, temperature=1.0):
+#     x = preprocess_frame(frame_hw3, normalizer).to(device)
+#     logits = model(x).squeeze(0)
+#     if temperature != 1.0:
+#         logits = logits / max(1e-6, float(temperature))
+#     probs = torch.softmax(logits, dim=-1)
+#     action = int(torch.multinomial(probs, num_samples=1).item())
+#     return action, probs.cpu().numpy()
+
+
 class ImageNormalizer:
+    """
+    Normalizes CHW images using given per-channel mean/std (float32).
+    Expects inputs in [0,1].
+    """
     def __init__(self, mean, std):
         self.mean = torch.tensor(mean, dtype=torch.float32).view(3,1,1)
         self.std  = torch.clamp(torch.tensor(std, dtype=torch.float32).view(3,1,1), min=1e-3)
     def __call__(self, x):  # x: [3,H,W] in [0,1]
         return (x - self.mean) / self.std
 
+
+# ---------- Legacy small CNN (for old checkpoints) ----------
 class ConvBlock(torch.nn.Module):
     def __init__(self, c_in, c_out, k=3, s=1, p=1):
         super().__init__()
         self.conv = torch.nn.Conv2d(c_in, c_out, kernel_size=k, stride=s, padding=p, bias=False)
-        self.bn   = torch.nn.BatchNorm2d(c_out)  # or GroupNorm if you switched
+        self.bn   = torch.nn.BatchNorm2d(c_out)
         self.act  = torch.nn.GELU()
     def forward(self, x):
         return self.act(self.bn(self.conv(x)))
@@ -47,7 +154,6 @@ class PolicyCNN(torch.nn.Module):
             ConvBlock(256, 256),
         )
         self.head = torch.nn.Linear(256, n_actions)
-
     def forward(self, x):
         x = self.stem(x)
         x = self.stage2(x)
@@ -57,51 +163,135 @@ class PolicyCNN(torch.nn.Module):
         x = torch.flatten(x, 1)
         return self.head(x)
 
-# ---- inference helpers ----
 
-def load_policy(ckpt_path, device=None):
-    """Load model + normalizer from a saved training checkpoint."""
-    device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    ckpt = torch.load(ckpt_path, map_location=device)
-    n_actions = int(ckpt['n_actions'])
-    model = PolicyCNN(n_actions=n_actions).to(device)
-    model.load_state_dict(ckpt['state_dict'])
+# ---------- New ResNet policy (for new checkpoints) ----------
+class ResNetPolicy(torch.nn.Module):
+    """
+    Thin wrapper around torchvision ResNet-18/34 to set classifier head.
+    (Weights are loaded from checkpoint; no need to pull pretrained weights here.)
+    """
+    def __init__(self, n_actions=16, backbone='resnet18'):
+        super().__init__()
+        global _RESNET_IMPORTED
+        if not _RESNET_IMPORTED:
+            from torchvision.models import resnet18, resnet34
+            ResNetPolicy._resnet18 = resnet18
+            ResNetPolicy._resnet34 = resnet34
+            _RESNET_IMPORTED = True
+
+        if backbone == 'resnet18':
+            self.backbone = ResNetPolicy._resnet18(weights=None)
+        elif backbone == 'resnet34':
+            self.backbone = ResNetPolicy._resnet34(weights=None)
+        else:
+            raise ValueError("Unknown backbone: {backbone}")
+
+        in_features = self.backbone.fc.in_features
+        self.backbone.fc = torch.nn.Linear(in_features, n_actions)
+
+    def forward(self, x):
+        return self.backbone(x)
+
+
+# ---------- Model builder that understands both checkpoint formats ----------
+def _parse_arch(ckpt):
+    """
+    Returns ('resnet18' or 'resnet34', 'resnet') for new checkpoints,
+    or ('legacy', 'cnn') for old ones without arch info.
+    """
+    arch = ckpt.get('arch', '')
+    if arch.startswith('ResNetPolicy_'):
+        # e.g., 'ResNetPolicy_resnet18_pretrained'
+        parts = arch.split('_')
+        # expected: ['ResNetPolicy', 'resnet18', 'pretrained']
+        if len(parts) >= 2 and parts[1] in ('resnet18', 'resnet34'):
+            return parts[1], 'resnet'
+    # Legacy fallback
+    return 'legacy', 'cnn'
+
+
+def _build_model_from_ckpt(ckpt, device):
+    n_actions = int(ckpt.get('n_actions', 16))
+    backbone, kind = _parse_arch(ckpt)
+    if kind == 'resnet':
+        model = ResNetPolicy(n_actions=n_actions, backbone=backbone).to(device)
+    else:
+        # legacy small CNN
+        model = PolicyCNN(n_actions=n_actions).to(device)
+    model.load_state_dict(ckpt['state_dict'], strict=True)
     model.eval()
-    normalizer = ImageNormalizer(ckpt['mean'], ckpt['std'])
-    return model, normalizer, device, n_actions
+    return model, n_actions
 
+
+# ---------- I/O + preprocessing ----------
 def preprocess_frame(frame_hw3, normalizer, target=256):
     """
-    frame_hw3: numpy array [H,W,3], float32 in [0,1]
+    frame_hw3: numpy array [H,W,3], float32 or uint8; scaled to [0,1] here.
     returns torch tensor [1,3,target,target]
     """
     assert frame_hw3.ndim == 3 and frame_hw3.shape[2] == 3
-    x = torch.from_numpy(np.transpose(frame_hw3, (2,0,1))).float()   # [3,H,W]
+    x_np = frame_hw3.astype(np.float32)
+    if x_np.max() > 1.0:  # support uint8 legacy inputs
+        x_np = x_np / 255.0
+    x = torch.from_numpy(np.transpose(x_np, (2,0,1))).float()   # [3,H,W]
     x = F.interpolate(x.unsqueeze(0), size=(target, target), mode='bilinear', align_corners=False).squeeze(0)  # [3,T,T]
     x = normalizer(x)
     return x.unsqueeze(0)  # [1,3,T,T]
 
+
+# ---------- Public API (unchanged names/signatures) ----------
+def load_policy(ckpt_path, device=None):
+    """
+    Load model + normalizer from a saved training checkpoint.
+    Backward-compatible with legacy CNN checkpoints and new ResNet checkpoints.
+    """
+    device = device or torch.device('cuda' if torch.cuda.is_available() else
+                                    ('mps' if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available() else 'cpu'))
+    ckpt = torch.load(ckpt_path, map_location=device)
+
+    # Build the right model and read n_actions
+    model, n_actions = _build_model_from_ckpt(ckpt, device)
+
+    # Normalization: always read mean/std from checkpoint (both formats store them)
+    mean = ckpt.get('mean', (0.485, 0.456, 0.406))
+    std  = ckpt.get('std',  (0.229, 0.224, 0.225))
+    normalizer = ImageNormalizer(mean, std)
+
+    return model, normalizer, device, n_actions
+
+
 @torch.no_grad()
-def act_greedy(model, normalizer, device, frame_hw3):
+def act_greedy(model, normalizer, device, frame_hw3, target=256):
     """
     Returns (action_id, probs) where probs is a numpy array length n_actions.
     """
-    x = preprocess_frame(frame_hw3, normalizer)            # [1,3,256,256]
-    x = x.to(device)
+    x = preprocess_frame(frame_hw3, normalizer, target=target).to(device)   # [1,3,256,256]
     logits = model(x)                                      # [1,n_actions]
     probs = torch.softmax(logits, dim=-1).squeeze(0)       # [n_actions]
     action = int(torch.argmax(probs).item())
-    return action, probs.cpu().numpy()
+    return action, probs.detach().cpu().numpy()
+
 
 @torch.no_grad()
-def act_sample(model, normalizer, device, frame_hw3, temperature=1.0):
-    x = preprocess_frame(frame_hw3, normalizer).to(device)
+def act_sample(model, normalizer, device, frame_hw3, temperature=1.0, target=256):
+    x = preprocess_frame(frame_hw3, normalizer, target=target).to(device)
     logits = model(x).squeeze(0)
     if temperature != 1.0:
         logits = logits / max(1e-6, float(temperature))
     probs = torch.softmax(logits, dim=-1)
     action = int(torch.multinomial(probs, num_samples=1).item())
-    return action, probs.cpu().numpy()
+    return action, probs.detach().cpu().numpy()
+
+def bc_policy(models, state, skill):
+
+    assert state.max() > 1.0 
+     # allow uint8 input
+
+    state = np.asarray(state).astype(np.float32) / 255.0
+
+    model, normalizer, device, n_actions = models["bc_models"][skill]
+    action, probs = act_greedy(model, normalizer, device, state)
+    return action
 
 def load_pu_start_models(models_dir: str):
     """
@@ -238,7 +428,7 @@ def predict_pu_end_state(model: dict, state) -> dict:
 def load_all_models(skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table']):
     bc_models = {}
     for skill in skill_list:
-        ckpt_path = os.path.join('Traces/stone_pickaxe_easy', 'bc_checkpoints', f'{skill}_policy_cnn.pt')
+        ckpt_path = os.path.join('Traces/stone_pickaxe_easy', 'bc_checkpoints_resnet', f'{skill}_policy_resnet18_pt.pt')
         bc_models[skill] = load_policy(ckpt_path)
 
     artifacts = joblib.load('Traces/stone_pickaxe_easy/pca_models/pca_model_750.joblib')
@@ -289,16 +479,7 @@ def should_terminate(models, state, skill):
 
 
 
-def bc_policy(models, state, skill):
 
-    assert state.max() > 1.0 
-     # allow uint8 input
-
-    state = np.asarray(state).astype(np.float32) / 255.0
-
-    model, normalizer, device, n_actions = models["bc_models"][skill]
-    action, probs = act_greedy(model, normalizer, device, state)
-    return action
 
 
 class FixedSeedAlways(gym.Wrapper):
@@ -491,24 +672,108 @@ def compile_productions_into_skill_bank(
 
 # ===== EDIT: bc_policy to handle composite sentinels =====
 
+# def bc_policy_hierarchy(models, state, skill):
+#     entry = models["bc_models"][skill]
+
+#     # Composite sentinel?
+#     if isinstance(entry, tuple) and entry and entry[0] == "__COMPOSITE__":
+#         seq = entry[1]  # list of leaf skill names in order
+#         name = skill
+
+#         # progress tracker
+#         rt = models.setdefault("composite_runtime", {}).setdefault(name, {"idx": 0})
+#         idx = int(rt["idx"])
+
+#         # Guard: if already complete, hold last leaf's action (or return a STOP if you have one)
+#         if idx >= len(seq):
+#             last = seq[-1]
+#             return bc_policy(models, state, last)
+
+#         # If current sub-skill has terminated, advance
+#         cur = seq[idx]
+#         if should_terminate(models, state, cur):
+#             idx += 1
+#             rt["idx"] = idx
+#             if idx >= len(seq):
+#                 # Finished; hold last skill action
+#                 return bc_policy(models, state, seq[-1])
+#             cur = seq[idx]
+
+#         # Act with current sub-skill
+#         return bc_policy(models, state, cur)
+
+#     # ---- Primitive case (unchanged) ----
+#     assert state.max() > 1.0  # allow uint8 input
+#     state = np.asarray(state).astype(np.float32) / 255.0
+#     model, normalizer, device, n_actions = entry
+#     action, probs = act_greedy(model, normalizer, device, state)
+#     return action
+
+
+# def load_all_models_hierarchy(
+#     skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],
+#     hierarchies_dir: Optional[str] = None,
+#     symbol_map: Optional[Dict[str, str]] = None,
+# ):
+#     bc_models = {}
+#     for skill in skill_list:
+#         ckpt_path = os.path.join('Traces/stone_pickaxe_easy', 'bc_checkpoints', f'{skill}_policy_cnn.pt')
+#         bc_models[skill] = load_policy(ckpt_path)
+
+#     artifacts = joblib.load('Traces/stone_pickaxe_easy/pca_models/pca_model_750.joblib')
+#     scaler = artifacts['scaler']
+#     pca = artifacts['pca']
+#     n_features_expected = scaler.mean_.shape[0]
+
+#     pu_start_models = load_pu_start_models('Traces/stone_pickaxe_easy/pu_start_models')
+
+#     pu_end_models = {}
+#     for skill in skill_list:
+#         try:
+#             pu_end_models[skill] = load_pu_end_model('Traces/stone_pickaxe_easy/pu_end_models', skill)
+#         except FileNotFoundError:
+#             print(f"[WARN] No PU end model for skill '{skill}'")
+
+
+#     models = {
+#         "skills": list(skill_list),
+#         "bc_models": bc_models,
+#         "termination_models": pu_end_models,
+#         "start_models": pu_start_models,
+#         "pca_model": {'scaler': scaler, 'pca': pca, 'n_features_expected': n_features_expected}
+#     }
+
+#     # === NEW: compile unique hierarchies into this bank ===
+#     if hierarchies_dir and symbol_map:
+#         uniq = load_unique_hierarchies(hierarchies_dir)
+#         compile_productions_into_skill_bank(models, uniq, symbol_map)
+
+#     return models
+
+
 def bc_policy_hierarchy(models, state, skill):
+    """
+    Hierarchical controller that is compatible with both legacy CNN and new ResNet policies.
+    - Accepts uint8 [H,W,3] or float32 in [0,1]; scaling happens inside act_* via preprocess_frame.
+    - Composite entries are marked as ("__COMPOSITE__", [leaf_skill_1, leaf_skill_2, ...]).
+    """
     entry = models["bc_models"][skill]
 
-    # Composite sentinel?
-    if isinstance(entry, tuple) and entry and entry[0] == "__COMPOSITE__":
-        seq = entry[1]  # list of leaf skill names in order
+    # ---- Composite case ----
+    if isinstance(entry, tuple) and entry and isinstance(entry[0], str) and entry[0] == "__COMPOSITE__":
+        seq: List[str] = entry[1]  # ordered list of leaf skill names
         name = skill
 
         # progress tracker
         rt = models.setdefault("composite_runtime", {}).setdefault(name, {"idx": 0})
         idx = int(rt["idx"])
 
-        # Guard: if already complete, hold last leaf's action (or return a STOP if you have one)
+        # If already complete, keep executing the last leaf (or swap for STOP if you have one)
         if idx >= len(seq):
             last = seq[-1]
             return bc_policy(models, state, last)
 
-        # If current sub-skill has terminated, advance
+        # If the current sub-skill has terminated, advance
         cur = seq[idx]
         if should_terminate(models, state, cur):
             idx += 1
@@ -518,57 +783,83 @@ def bc_policy_hierarchy(models, state, skill):
                 return bc_policy(models, state, seq[-1])
             cur = seq[idx]
 
-        # Act with current sub-skill
+        # Act with the current sub-skill
         return bc_policy(models, state, cur)
 
-    # ---- Primitive case (unchanged) ----
-    assert state.max() > 1.0  # allow uint8 input
-    state = np.asarray(state).astype(np.float32) / 255.0
+    # ---- Primitive case ----
+    # Don't rescale to [0,1] here; act_greedy/preprocess_frame already supports uint8 or float.
+    state = np.asarray(state)
+    assert state.ndim == 3 and state.shape[-1] == 3, "state must be HxWx3"
     model, normalizer, device, n_actions = entry
-    action, probs = act_greedy(model, normalizer, device, state)
+    action, _ = act_greedy(model, normalizer, device, state)
     return action
 
 
 def load_all_models_hierarchy(
     skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],
     hierarchies_dir: Optional[str] = None,
-    symbol_map: Optional[Dict[str, str]] = None,
+    symbol_map:     Optional[Dict[str, str]] = None,
+    root:           str = 'Traces/stone_pickaxe_easy',
+    backbone_hint:  str = 'resnet18',  # try this first; will auto-fallback
 ):
+
+    ckpt_dir = os.path.join(root, 'bc_checkpoints_resnet')
     bc_models = {}
+
+    def _find_ckpt(skill: str) -> str:
+        # 1) direct hint
+        cand = os.path.join(ckpt_dir, f'{skill}_policy_{backbone_hint}_pt.pt')
+        if os.path.exists(cand):
+            return cand
+        # 2) any resnet file for the skill
+        hits = sorted(glob.glob(os.path.join(ckpt_dir, f'{skill}_policy_resnet*_pt.pt')))
+        if len(hits) > 0:
+            return hits[0]
+        # 3) legacy cnn filename
+        legacy = os.path.join(ckpt_dir, f'{skill}_policy_cnn.pt')
+        if os.path.exists(legacy):
+            return legacy
+        raise FileNotFoundError(
+            f"No checkpoint found for skill '{skill}'. "
+            f"Tried '{cand}', any resnet*, and legacy '{legacy}'."
+        )
+
+    # Load BC policies (model, normalizer, device, n_actions)
     for skill in skill_list:
-        ckpt_path = os.path.join('Traces/stone_pickaxe_easy', 'bc_checkpoints', f'{skill}_policy_cnn.pt')
+        ckpt_path = _find_ckpt(skill)
         bc_models[skill] = load_policy(ckpt_path)
 
-    artifacts = joblib.load('Traces/stone_pickaxe_easy/pca_models/pca_model_750.joblib')
+    # PCA artifacts (unchanged)
+    artifacts = joblib.load(os.path.join(root, 'pca_models', 'pca_model_750.joblib'))
     scaler = artifacts['scaler']
     pca = artifacts['pca']
     n_features_expected = scaler.mean_.shape[0]
 
-    pu_start_models = load_pu_start_models('Traces/stone_pickaxe_easy/pu_start_models')
+    # PU start models (unchanged)
+    pu_start_models = load_pu_start_models(os.path.join(root, 'pu_start_models'))
 
+    # PU end models; some may be missing
     pu_end_models = {}
     for skill in skill_list:
         try:
-            pu_end_models[skill] = load_pu_end_model('Traces/stone_pickaxe_easy/pu_end_models', skill)
+            pu_end_models[skill] = load_pu_end_model(os.path.join(root, 'pu_end_models'), skill)
         except FileNotFoundError:
             print(f"[WARN] No PU end model for skill '{skill}'")
 
-
     models = {
         "skills": list(skill_list),
-        "bc_models": bc_models,
-        "termination_models": pu_end_models,
-        "start_models": pu_start_models,
+        "bc_models": bc_models,                 # {skill: (model, normalizer, device, n_actions)} or ("__COMPOSITE__", [..])
+        "termination_models": pu_end_models,    # end detectors
+        "start_models": pu_start_models,        # start detectors
         "pca_model": {'scaler': scaler, 'pca': pca, 'n_features_expected': n_features_expected}
     }
 
-    # === NEW: compile unique hierarchies into this bank ===
+    # Compile hierarchies if provided
     if hierarchies_dir and symbol_map:
         uniq = load_unique_hierarchies(hierarchies_dir)
         compile_productions_into_skill_bank(models, uniq, symbol_map)
 
     return models
-
 
 if __name__ == "__main__":
     models = load_all_models_hierarchy(

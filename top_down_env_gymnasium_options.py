@@ -58,6 +58,8 @@ class OptionsOnTopEnv(gym.Env):
         self.action_space.seed(self._seed)
         self.observation_space.seed(self._seed)
 
+        self.debug_record_frames = None
+
         
 
     # ---------- utilities ----------
@@ -148,6 +150,10 @@ class OptionsOnTopEnv(gym.Env):
                 raise error.InvalidAction(f"bc_policy returned invalid primitive {prim_action} (P={P})")
 
             obs_local, r, term, trunc, info = self.env.step(prim_action)
+
+            if self.debug_record_frames is not None:
+                self.debug_record_frames.append(obs_local.copy())
+
             last_info = info
             total_reward += discount * float(r)
             discount *= self.gamma
@@ -200,77 +206,79 @@ if __name__ == "__main__":
     # Build envs
     base = CraftaxTopDownEnv(
         render_mode="rgb_array",
-        reward_items=["wood"],
+        reward_items=[],
         done_item="wood_pickaxe",
         include_base_reward=False,
         return_uint8=True,
     )
-    env = OptionsOnTopEnv(base_env=base, num_primitives=16,  gamma=0.99)
+    env = OptionsOnTopEnv(base_env=base, num_primitives=16, gamma=0.99)
+    env.max_skill_len = 30  
+    # env.max_skill_len = 20     
+
 
     # Reproducibility
-    seed = 100
+    seed = 888
     random.seed(seed)
     np.random.seed(seed)
 
     # Reset and capture first frame
     frames = []
+    env.debug_record_frames = frames
     obs, info = env.reset(seed=seed)
     frames.append(obs.copy())
 
-    # Identify option range
-    num_primitives = getattr(env, "num_primitives", 17)
-    num_options = getattr(env, "num_options", 5)
-    option_start = num_primitives
+    num_primitives = env.num_primitives
+    num_options = env.num_options
+    print(f"Env with {num_primitives} primitives + {num_options} options (total {env.action_space.n})")
+    print("Available skills:", env.skills)
 
-    # Sequence of skill indices within options
-    skills_seq = [0, 0, 0, 0, 4, 4, 4]
-
-    # Print mask BEFORE any option
+    # Now this list can contain both primitives and options directly
+    # Available skills: ['wood',    'stone',     'wood_pickaxe',     'stone_pickaxe',      'table']
+    # Available skills: ['16',      '17',        '18',               '19',                 '20']
+    # e.g. [0, 1, 17, 20] means: primitive 0, primitive 1, option 1, option 4
+    skills_seq = [16, 16, 16, 5, 20, 18] # w w w 
+    # Print mask BEFORE any run
     mask = env.action_masks()
-    print_options_mask("BEFORE first run", mask, option_start, num_options)
+    print_options_mask("BEFORE first run", mask, num_primitives, num_options)
 
     rewards = []
 
-    def run_skill(skill_idx, tag):
-        # nonlocal obs
-        action_id = option_start + skill_idx
+    def run_action(a, tag):
         mask = env.action_masks()
-        valid = bool(mask[action_id]) if action_id < len(mask) else False
-        skill_name = None
-        if hasattr(env, "skills"):
-            try:
-                skill_name = env.skills[skill_idx]
-            except Exception:
-                skill_name = None
-        skill_label = f"{skill_idx}" + (f" ({skill_name})" if skill_name else "")
+        valid = bool(mask[a]) if a < len(mask) else False
+        label = str(a)
 
-        # print(f"{tag}: running OPTION {skill_label} [action id {action_id}], valid={valid}")
-        obs, r, terminated, truncated, info = env.step(action_id)
+        if a >= num_primitives and hasattr(env, "skills"):
+            skill_idx = a - num_primitives
+            if 0 <= skill_idx < len(env.skills):
+                label += f" (option:{env.skills[skill_idx]})"
+
+        print(f"{tag}: running action {label}, valid={valid}")
+        obs, r, terminated, truncated, info = env.step(a)
         frames.append(obs.copy())
-        # print(f"{tag}: reward={r}, terminated={terminated}, truncated={truncated}")
+        print(f"{tag}: reward={r}, terminated={terminated}, truncated={truncated}")
 
         mask_after = env.action_masks()
-        print_options_mask(f"AFTER {tag}", mask_after, option_start, num_options)
+        print_options_mask(f"AFTER {tag}", mask_after, num_primitives, num_options)
 
-        if terminated or truncated:
-            print(f"{tag}: episode ended → resetting")
-            obs, _ = env.reset()
-            frames.append(obs.copy())
-        
-        print("===========")  # blank line
+        # if terminated or truncated:
+        #     print(f"{tag}: episode ended → resetting")
+        #     obs, _ = env.reset()
+        #     frames.append(obs.copy())
+
+        print("===========")
         return r
-    
 
-    # Execute the sequence
-    for i, s in enumerate(skills_seq, 1):
-        r = run_skill(s, f"Run {i}")
+    # Execute the sequence (mix primitives + options)
+    for i, a in enumerate(skills_seq, 1):
+        r = run_action(a, f"Run {i}")
         rewards.append(r)
 
     # Save GIF
     seq_str = "-".join(map(str, skills_seq))
-    rewards_str = "_".join(str(float(r)) for r in rewards)  # cast to float for clean printing
-    out_path = f"craftax_skills_{seq_str}_seed_{seed}_rewards_{rewards_str}.gif"
-    imageio.mimsave(out_path, frames, fps=5)
+    rewards_str = "_".join(str(float(r)) for r in rewards)
+    out_path = f"craftax_seq_.gif"
+    imageio.mimsave(out_path, frames, fps=10)
     print(f"Saved GIF to: {out_path}")
 
 # if __name__ == "__main__":
