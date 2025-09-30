@@ -35,7 +35,7 @@ def make_options_env(*, seed: int, render_mode=None, max_episode_steps=100):
             base,
             num_primitives=16,
             gamma=0.99,
-            max_skill_len=50,
+            max_skill_len=25,
         )
 
         # 1) ActionMasker wraps the env that has `action_masks`
@@ -83,7 +83,7 @@ def get_action_masks(env_or_vec):
 
 
 if __name__ == "__main__":
-    TRAIN_SEED = 1000  # set your fixed training seed here
+    TRAIN_SEED = 888  # set your fixed training seed here
 
     train_env = DummyVecEnv([make_options_env(seed=TRAIN_SEED, render_mode=None)])
     train_env = VecTransposeImage(train_env) 
@@ -112,7 +112,7 @@ if __name__ == "__main__":
     )
 
     model.learn(
-        total_timesteps=200_000,
+        total_timesteps=800,
         tb_log_name="ppo_wood_pick_hierarchy",   # TB subdir
         log_interval=10,
         progress_bar=True,

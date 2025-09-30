@@ -23,7 +23,7 @@ from option_helpers import FixedSeedAlways, to_gif_frame
 
 
 
-def make_options_env(*, seed: int, render_mode=None, K=5, max_episode_steps=100):
+def make_options_env(*, seed: int, render_mode=None,  max_episode_steps=100):
     def _thunk():
         base = CraftaxTopDownEnv(
             render_mode=render_mode,
@@ -85,9 +85,9 @@ def get_action_masks(env_or_vec):
 
 if __name__ == "__main__":
     K = 5
-    TRAIN_SEED = 1000  # set your fixed training seed here
+    TRAIN_SEED = 888  # set your fixed training seed here
 
-    train_env = DummyVecEnv([make_options_env(seed=TRAIN_SEED, render_mode=None, K=K)])
+    train_env = DummyVecEnv([make_options_env(seed=TRAIN_SEED, render_mode=None)])
     train_env = VecTransposeImage(train_env) 
     train_env = VecMonitor(train_env)
 
@@ -102,7 +102,7 @@ if __name__ == "__main__":
 
     # For evaluation you can reuse the same seed or choose a different fixed seed
     EVAL_SEED = TRAIN_SEED
-    eval_env_vec = DummyVecEnv([make_options_env(seed=EVAL_SEED, render_mode=None, K=K)])
+    eval_env_vec = DummyVecEnv([make_options_env(seed=EVAL_SEED, render_mode=None)])
     eval_env_vec = VecTransposeImage(eval_env_vec)
     eval_env_vec = VecMonitor(eval_env_vec)
 
@@ -114,7 +114,7 @@ if __name__ == "__main__":
     )
 
     model.learn(
-        total_timesteps=500_000,
+        total_timesteps=200_000,
         tb_log_name="ppo_wood_pick_options",   # TB subdir
         log_interval=10,
         progress_bar=True,

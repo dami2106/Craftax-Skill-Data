@@ -29,7 +29,7 @@ def make_env(seed: int):
     return _thunk
 
 if __name__ == "__main__":
-    SEED = 1000  # single training seed; every episode uses this seed
+    SEED = 888  # single training seed; every episode uses this seed
 
     train_env = DummyVecEnv([make_env(seed=SEED)])
     train_env = VecTransposeImage(train_env)  # HWC -> CHW for CnnPolicy
@@ -58,12 +58,13 @@ if __name__ == "__main__":
         verbose=1,
         tensorboard_log="./tb_logs_ppo_craftax",
         device="auto",
+        gamma=0.99,
     )
 
     model.learn(
-        total_timesteps=1_000_000,
+        total_timesteps=500_000,
         log_interval=10,
-        tb_log_name="ppo_wood_actions",
+        tb_log_name="ppo_wood_pick_actions",
         progress_bar=True,
         callback=eval_callback,
     )

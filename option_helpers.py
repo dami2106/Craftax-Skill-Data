@@ -7,7 +7,7 @@ import json
 from joblib import load as joblib_load
 import glob
 from typing import Any, Dict, List, Optional, Tuple
-
+import gymnasium as gym
 # Optional: only import torchvision if we actually need a ResNet
 _RESNET_IMPORTED = False
 
@@ -312,6 +312,54 @@ def available_skills(models, state):
     order = models["skills"]
     return np.array([s in applicable for s in order], dtype=bool)
 
+
+class FixedSeedAlways(gym.Wrapper):
+    """
+    Forces the same seed on *every* reset call, regardless of what the caller passes.
+    This guarantees full determinism of the environment initial state across episodes.
+    """
+    def __init__(self, env, seed: int = 1000):
+        super().__init__(env)
+        self._seed = int(seed)
+
+    def reset(self, *, seed=None, options=None, **kwargs):
+        # Ignore any provided seed and enforce the fixed one
+        kwargs.pop("seed", None)
+        return self.env.reset(seed=self._seed, options=options, **kwargs)
+
+    # (Optional) If someone calls env.seed(...), force our fixed seed too
+    def seed(self, seed=None):
+        # Some envs still expose a seed() method; keep them pinned
+        if hasattr(self.env, "seed") and callable(getattr(self.env, "seed")):
+            return self.env.seed(self._seed)
+        return [self._seed]
+
+
+def to_gif_frame(obs):
+    import numpy as np
+    arr = np.asarray(obs)
+
+    # remove vec batch dim if present (N=1)
+    if arr.ndim == 4 and arr.shape[0] == 1:
+        arr = arr[0]                    # (C,H,W)
+
+    # CHW -> HWC if needed
+    if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
+        arr = np.transpose(arr, (1, 2, 0))   # (H,W,C)
+
+    # if single channel, replicate to RGB
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        arr = np.repeat(arr, 3, axis=2)      # (H,W,3)
+
+    # scale/clip & cast to uint8
+    if arr.dtype != np.uint8:
+        arr = np.clip(arr, 0, 255)
+        if arr.max() <= 1.0:
+            arr = (arr * 255.0).round()
+        arr = arr.astype(np.uint8)
+
+    # if still grayscale 2D, OK for GIF; otherwise ensure HWC
+    return arr
 
 # ============================================================
 # ===============  ROBUST HIERARCHY FIX BELOW  ===============

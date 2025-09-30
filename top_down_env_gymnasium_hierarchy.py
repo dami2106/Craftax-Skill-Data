@@ -233,7 +233,7 @@ if __name__ == "__main__":
         include_base_reward=False,
         return_uint8=True,
     )
-    env = OptionsOnTopEnv(base_env=base, num_primitives=16, gamma=0.99, max_skill_len=200)
+    env = OptionsOnTopEnv(base_env=base, num_primitives=16, gamma=0.99, max_skill_len=50)
     # env.max_skill_len = 30  
     # env.max_skill_len = 20     
 
@@ -260,7 +260,7 @@ if __name__ == "__main__":
     # Available skills: ['wood' , 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table', 'Production_0', 'Production_1', 'Production_8 WTW 23', 'Production_10', 'Production_9', 'Production_14']
 
 
-    skills_seq = [ 23 ] # w w w 
+    skills_seq = [ 23, 16 ] # w w w 
 
 
 
