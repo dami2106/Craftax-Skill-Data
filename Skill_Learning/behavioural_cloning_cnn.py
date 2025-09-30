@@ -243,11 +243,25 @@ print("Using device:", device)
 model = PolicyCNN(n_actions=n_actions).to(device)   # <-- NEW MODEL
 
 criterion = nn.CrossEntropyLoss()
-opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
+opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=3e-4)
+sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    opt,
+    mode='min',
+    factor=0.5,        # halve LR on plateau
+    patience=4,        # try 3–5
+    threshold=1e-3,    # require ~0.1% improvement to reset
+    threshold_mode='rel',
+    cooldown=2,        # brief cooldown after an LR drop
+    min_lr=1e-6,       # don’t go to zero
+    verbose=True
+)
 
-best_val = float('inf'); patience=10; bad=0
-for epoch in range(150):  # CNN converges slower per step; start with ~60-100
-    # train
+best_val = float('inf')
+es_patience = 15       # ES > LR patience
+bad = 0
+
+best_val = float('inf'); patience=30; bad=0
+for epoch in range(150):
     model.train()
     total = 0.0
     for xb, yb in train_loader:
@@ -261,7 +275,7 @@ for epoch in range(150):  # CNN converges slower per step; start with ~60-100
         total += loss.item() * xb.size(0)
     train_loss = total / len(train_ds)
 
-    # val
+    # ---- validation
     model.eval()
     with torch.no_grad():
         tot, correct = 0.0, 0
@@ -270,18 +284,22 @@ for epoch in range(150):  # CNN converges slower per step; start with ~60-100
             logits = model(xb)
             loss = criterion(logits, yb)
             tot += loss.item() * xb.size(0)
-            pred = logits.argmax(dim=1)
-            correct += (pred == yb).sum().item()
+            correct += (logits.argmax(1) == yb).sum().item()
         val_loss = tot / len(val_ds)
         val_acc = correct / len(val_ds)
 
-    print(f"epoch {epoch:03d} | train {train_loss:.4f} | val {val_loss:.4f} | acc {val_acc:.3f}")
+    # step the scheduler AFTER computing val_loss
+    sched.step(val_loss)
 
+    # (optional) log current LR
+    cur_lr = opt.param_groups[0]['lr']
+    print(f"epoch {epoch:03d} | lr {cur_lr:.2e} | train {train_loss:.4f} | val {val_loss:.4f} | acc {val_acc:.3f}")
+
+    # early stopping
     if val_loss + 1e-6 < best_val:
         best_val = val_loss
         bad = 0
         best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-        # Save checkpoint on improvement
         torch.save({
             'state_dict': best_state,
             'mean': mean_tr,
@@ -291,12 +309,12 @@ for epoch in range(150):  # CNN converges slower per step; start with ~60-100
             'arch': 'PolicyCNN',
             'epoch': epoch,
             'val_loss': best_val,
+            'lr': cur_lr,
         }, ckpt_path)
     else:
         bad += 1
-        if bad >= patience:
+        if bad >= es_patience:
             break
-
 # Load best state back to model
 model.load_state_dict(best_state)
 model.to(device)
