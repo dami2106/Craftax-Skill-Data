@@ -36,7 +36,7 @@ def make_options_env(*, seed: int, render_mode=None,  max_episode_steps=100):
             base,
             num_primitives=16,
             gamma=0.99,
-            max_skill_len=50,
+            max_skill_len=25,
         )
 
         # 1) ActionMasker wraps the env that has `action_masks`

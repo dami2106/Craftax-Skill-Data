@@ -179,7 +179,12 @@ class OptionsOnTopEnv(gym.Env):
 
         while True:
             frame = self._as_uint8_frame(obs_local)
-            prim_action = int(bc_policy_hierarchy(self.models, frame, skill_name, call_id))
+            prim_action = int(
+                bc_policy_hierarchy(
+                    self.models, frame, skill_name, call_id,
+                    max_leaf_len=self.max_skill_len   # <- per-leaf cap
+                )
+            )
             if prim_action < 0 or prim_action >= P:
                 raise error.InvalidAction(f"bc_policy returned invalid primitive {prim_action} (P={P})")
 
@@ -233,7 +238,7 @@ if __name__ == "__main__":
         include_base_reward=False,
         return_uint8=True,
     )
-    env = OptionsOnTopEnv(base_env=base, num_primitives=16, gamma=0.99, max_skill_len=50)
+    env = OptionsOnTopEnv(base_env=base, num_primitives=16, gamma=0.99, max_skill_len=25)
     # env.max_skill_len = 30  
     # env.max_skill_len = 20     
 
@@ -260,7 +265,7 @@ if __name__ == "__main__":
     # Available skills: ['wood' , 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table', 'Production_0', 'Production_1', 'Production_8 WTW 23', 'Production_10', 'Production_9', 'Production_14']
 
 
-    skills_seq = [ 23, 16 ] # w w w 
+    skills_seq = [ 23] # w w w 
 
 
 

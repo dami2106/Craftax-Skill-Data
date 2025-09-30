@@ -112,7 +112,7 @@ if __name__ == "__main__":
     )
 
     model.learn(
-        total_timesteps=800,
+        total_timesteps=100_000,
         tb_log_name="ppo_wood_pick_hierarchy",   # TB subdir
         log_interval=10,
         progress_bar=True,

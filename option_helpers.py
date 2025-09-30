@@ -449,45 +449,44 @@ def _primitive_should_terminate(models, state, skill) -> bool:
     return predict_pu_end_state(tm, X_feats)["is_end"]
 
 
-def bc_policy_hierarchy(models, state, skill, call_id: Optional[int] = None):
-    """
-    Hierarchical controller with instance-scoped, phase-aware execution.
-    - Composite entries are ("__COMPOSITE__", [leaf_skill_1, ..., leaf_skill_n]).
-    - call_id disambiguates concurrent/recursive invocations.
-    """
+# option_helpers.py
+def bc_policy_hierarchy(models, state, skill, call_id: Optional[int] = None, max_leaf_len: Optional[int] = None):
     entry = models["bc_models"][skill]
 
-    # ---- Composite case ----
-    if isinstance(entry, tuple) and entry and isinstance(entry[0], str) and entry[0] == "__COMPOSITE__":
+    if isinstance(entry, tuple) and entry and entry[0] == "__COMPOSITE__":
         seq: List[str] = entry[1]
         rt = _rt_for(models, skill, call_id)
         idx = int(rt.get("idx", 0))
+        leaf_steps = int(rt.get("leaf_steps", 0))
 
-        # Clamp idx to [0, len(seq)]
-        if idx < 0:
-            idx = 0
-            rt["idx"] = 0
-        if idx > len(seq):
-            idx = len(seq)
-            rt["idx"] = len(seq)
-
-        # If current leaf has finished, advance to the next
+        # If detector says current leaf is done, advance and reset per-leaf counter
         if idx < len(seq):
             cur = seq[idx]
             if _primitive_should_terminate(models, state, cur):
                 idx += 1
                 rt["idx"] = idx
+                rt["leaf_steps"] = 0
+                leaf_steps = 0
 
-        # If we've finished all leaves, just defer to the last leaf's policy (or a STOP action if you have one)
+        # If a per-leaf cap is set and we’ve spent it, force advance
+        if max_leaf_len is not None and idx < len(seq) and leaf_steps >= max_leaf_len:
+            idx += 1
+            rt["idx"] = idx
+            rt["leaf_steps"] = 0
+            leaf_steps = 0
+
         if idx >= len(seq):
             last = seq[-1]
             return bc_policy(models, state, last)
 
-        # Otherwise act with current sub-skill
         cur = seq[idx]
+        # Count one step on this leaf
+        if max_leaf_len is not None:
+            rt["leaf_steps"] = leaf_steps + 1
+
         return bc_policy(models, state, cur)
 
-    # ---- Primitive case ----
+    # primitive case unchanged
     state = np.asarray(state)
     assert state.ndim == 3 and state.shape[-1] == 3, "state must be HxWx3"
     model, normalizer, device, n_actions = entry
