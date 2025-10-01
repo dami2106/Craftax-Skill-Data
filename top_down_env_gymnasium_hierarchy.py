@@ -2,23 +2,6 @@
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces, error
-
-from top_down_env_gymnasium import CraftaxTopDownEnv
-
-from option_helpers import *
-import numpy as np
-import random
-import random
-import numpy as np
-import imageio
-
-import random
-import numpy as np
-import imageio
-import numpy as np
-import gymnasium as gym
-from gymnasium import spaces, error
-
 from top_down_env_gymnasium import CraftaxTopDownEnv
 
 # IMPORTANT: import the updated helpers
@@ -27,16 +10,19 @@ from option_helpers import (
     bc_policy_hierarchy,
     load_all_models_hierarchy,
     new_call_id,
-    should_terminate,          # now phase/instance-aware
+    should_terminate,          # phase/instance-aware
 )
 
 class OptionsOnTopEnv(gym.Env):
     """
-    Wraps CraftaxTopDownEnv to expose a Discrete action space:
+    Discrete action space:
       [0..P-1]      -> primitive actions (single step)
-      [P..P+K-1]    -> options (macro-step via BC until termination)
+      [P..P+K-1]    -> options (macro policy via BC, but we execute EXACTLY ONE primitive per env.step)
 
-    Primitives are always valid; options are valid iff available_skills(obs)[i] is True.
+    Commitment semantics:
+      - When NO option is active: primitives are valid; options valid iff available_skills(...)
+      - When an option IS active: ONLY that option is valid (primitives & other options masked out)
+      - Option ends if: episode ends, should_terminate(...), or step budget hits 0
     """
     metadata = {"render_modes": ["rgb_array", "human"], "render_fps": 0}
 
@@ -45,18 +31,18 @@ class OptionsOnTopEnv(gym.Env):
         base_env,
         num_primitives: int = 17,
         gamma: float = 0.99,
-        max_skill_len: int = 100,
+        max_skill_len: int = 100,   # per-leaf cap; composites scale by number of leaves
     ):
         super().__init__()
         self.env = base_env
         self.gamma = float(gamma)
         self.max_skill_len = int(max_skill_len)
 
-        # Models / skills (now come with instance-scoped runtime support)
+        # Models / skills (supports composite skills + instance-scoped runtime)
         self.models = load_all_models_hierarchy(
-            skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],
-            hierarchies_dir = 'Traces/stone_pickaxe_easy/hierarchy_data/Simple',
-            symbol_map = {
+            skill_list=['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],
+            hierarchies_dir='Traces/stone_pickaxe_easy/hierarchy_data/Simple',
+            symbol_map={
                 "0": "stone",
                 "1": "stone_pickaxe",
                 "2": "table",
@@ -64,8 +50,8 @@ class OptionsOnTopEnv(gym.Env):
                 "4": "wood_pickaxe",
             }
         )
-        self.num_options = len(self.models["skills"])
         self.skills = self.models["skills"]
+        self.num_options = len(self.skills)
 
         # ---- Action space mapping
         self.num_primitives = int(num_primitives)
@@ -76,33 +62,35 @@ class OptionsOnTopEnv(gym.Env):
         self.action_space = spaces.Discrete(self.num_primitives + self.num_options)
         self.observation_space = self.env.observation_space
 
+        # Book-keeping
         self.elapsed_macro_steps = 0
         self.current_obs = None
 
+        # Seeding consistent with base
         self._seed = getattr(self.env, "_seed", 0)
         self.action_space.seed(self._seed)
         self.observation_space.seed(self._seed)
 
-        self.debug_record_frames = None
+        # Commitment state (active option)
+        self.active_option_idx = None    # index into self.skills, or None
+        self.active_call_id = None       # unique call id for this macro execution
+        self.option_steps_left = 0       # budget counter (see _skill_budget)
 
-
+    # ---------- utilities ----------
     def _skill_budget(self, skill_name: str) -> int:
         """
         Primitive skills get max_skill_len.
         Composite skills get (#leaf_skills) * max_skill_len.
+        We infer composite by checking models["bc_models"][skill_name] == ("__COMPOSITE__", seq).
         """
         entry = self.models["bc_models"].get(skill_name)
         if isinstance(entry, tuple) and entry and entry[0] == "__COMPOSITE__":
             seq = entry[1]             # list of leaf skill names
             return len(seq) * self.max_skill_len
         return self.max_skill_len
-    
-    # ---------- utilities ----------
+
     @staticmethod
     def _as_uint8_frame(obs):
-        """
-        Ensure obs is HxWxC uint8 (what most BC models expect).
-        """
         if isinstance(obs, np.ndarray):
             if obs.dtype == np.uint8:
                 return obs
@@ -112,16 +100,28 @@ class OptionsOnTopEnv(gym.Env):
     # ---------- MaskablePPO hook ----------
     def action_masks(self):
         P, K = self.num_primitives, self.num_options
-        prim_mask = np.ones(P, dtype=bool)
         if K == 0:
-            return prim_mask
+            return np.ones(P, dtype=bool)
 
         if self.current_obs is None:
-            return np.concatenate([prim_mask, np.zeros(K, dtype=bool)], axis=0)
+            # Not reset yet: allow only primitives
+            prim_mask = np.ones(P, dtype=bool)
+            opt_mask  = np.zeros(K, dtype=bool)
+            return np.concatenate([prim_mask, opt_mask], axis=0)
 
+        # If committed to an option, expose ONLY that option
+        if self.active_option_idx is not None:
+            prim_mask = np.zeros(P, dtype=bool)
+            opt_mask  = np.zeros(K, dtype=bool)
+            opt_mask[self.active_option_idx] = True
+            return np.concatenate([prim_mask, opt_mask], axis=0)
+
+        # No active option: primitives ON, options according to availability
+        prim_mask = np.ones(P, dtype=bool)
         frame = self._as_uint8_frame(self.current_obs)
         full_mask = available_skills(self.models, frame)  # aligned to models["skills"]
 
+        # Map any internal order to self.skills order (if different)
         skills_order = self.models["skills"]
         idx_map = {s: i for i, s in enumerate(skills_order)}
         opt_mask = np.array([full_mask[idx_map[s]] for s in self.skills], dtype=bool)
@@ -132,100 +132,106 @@ class OptionsOnTopEnv(gym.Env):
         obs, info = self.env.reset(seed=seed, options=options)
         self.elapsed_macro_steps = 0
         self.current_obs = obs
-        # Clear *all* composite instance state across episodes
+
+        # Clear composite/instance runtime across episodes
         if "composite_runtime" in self.models:
             self.models["composite_runtime"].clear()
-        # also reset counter to keep logs tidy (optional)
         if "call_id_ctr" in self.models:
             self.models["call_id_ctr"] = 0
+
+        # Clear commitment
+        self.active_option_idx = None
+        self.active_call_id = None
+        self.option_steps_left = 0
+
         return obs, info
 
+    def _bc_one_step_for_active(self, frame_uint8: np.ndarray) -> int:
+        """
+        Compute exactly ONE primitive action from BC for the active option instance.
+        """
+        assert self.active_option_idx is not None
+        assert self.active_call_id is not None
+        skill_name = self.skills[self.active_option_idx]
+        prim = int(
+            bc_policy_hierarchy(
+                self.models,
+                frame_uint8,
+                skill_name,
+                self.active_call_id,
+                max_leaf_len=self.max_skill_len,  # per-leaf cap
+            )
+        )
+        if prim < 0 or prim >= self.num_primitives:
+            raise error.InvalidAction(
+                f"bc_policy returned invalid primitive {prim} (P={self.num_primitives})"
+            )
+        return prim
+
     def step(self, a):
+        # Normalize scalar action
         if not np.isscalar(a):
             a = int(np.asarray(a).item())
         if a < 0 or a >= self.action_space.n:
-            raise error.InvalidAction(
-                f"Action {a} out of range for Discrete({self.action_space.n})"
-            )
+            raise error.InvalidAction(f"Action {a} out of range for Discrete({self.action_space.n})")
 
         P, K = self.num_primitives, self.num_options
 
-        # --- Case 1: primitive action -> single low-level step
-        if a < P:
-            obs, r, terminated, truncated, info = self.env.step(a)
-            self.current_obs = obs
-            self.elapsed_macro_steps += 1
-            return obs, float(r), bool(terminated), bool(truncated), info
+        # Decide which primitive to execute THIS step
+        if self.active_option_idx is None:
+            # No active option yet
+            if a < P:
+                # Chose a primitive → execute it directly
+                prim_action = a
+            else:
+                # Start a new option; commit and run ONE BC step
+                picked_idx = a - P
+                if picked_idx < 0 or picked_idx >= K:
+                    raise error.InvalidAction(f"Invalid option id {picked_idx}")
+                self.active_option_idx = picked_idx
+                self.active_call_id = new_call_id(self.models)  # unique instance id
+                skill_name = self.skills[self.active_option_idx]
+                self.option_steps_left = self._skill_budget(skill_name)  # total budget for this macro
+                frame = self._as_uint8_frame(self.current_obs)
+                prim_action = self._bc_one_step_for_active(frame)
+        else:
+            # Option is active → ignore 'a' (mask only exposes the same option anyway)
+            frame = self._as_uint8_frame(self.current_obs)
+            prim_action = self._bc_one_step_for_active(frame)
 
-        # --- Case 2: option/skill -> run BC until termination (instance-scoped)
-        skill_id = a - P
-        skill_name = self.skills[skill_id]
-
-        # New instance id for this macro execution
-        call_id = new_call_id(self.models)
-
-        total_reward = 0.0
-        discount = 1.0
-        inner_steps = 0
-        terminated = False
-        truncated = False
-        last_info = {}
-
-        obs_local = self.current_obs
-
-        step_budget = self._skill_budget(skill_name)
-
-        while True:
-            frame = self._as_uint8_frame(obs_local)
-            prim_action = int(
-                bc_policy_hierarchy(
-                    self.models, frame, skill_name, call_id,
-                    max_leaf_len=self.max_skill_len   # <- per-leaf cap
-                )
-            )
-            if prim_action < 0 or prim_action >= P:
-                raise error.InvalidAction(f"bc_policy returned invalid primitive {prim_action} (P={P})")
-
-            obs_local, r, term, trunc, info = self.env.step(prim_action)
-            last_info = info
-            total_reward += discount * float(r)
-            discount *= self.gamma
-            inner_steps += 1
-
-            if self.debug_record_frames is not None:
-                self.debug_record_frames.append(obs_local.copy())
-
-            # termination checks
-            if term or trunc:
-                terminated, truncated = bool(term), bool(trunc)
-                break
-
-            if should_terminate(self.models, self._as_uint8_frame(obs_local), skill_name, call_id):
-                # Composite termination is now phase-aware: only ends on final leaf
-                break
-
-            if inner_steps >= step_budget:
-                break
-
-        # commit final obs
-        self.current_obs = obs_local
+        # ---- exactly one primitive env step ----
+        obs, r, terminated, truncated, info = self.env.step(prim_action)
+        self.current_obs = obs
         self.elapsed_macro_steps += 1
-        return obs_local, float(total_reward), terminated, truncated, last_info
+
+        # ---- termination checks for active option (if any) ----
+        if self.active_option_idx is not None:
+            self.option_steps_left -= 1
+            stop = False
+
+            if terminated or truncated:
+                stop = True
+            else:
+                skill_name = self.skills[self.active_option_idx]
+                if should_terminate(self.models, self._as_uint8_frame(obs), skill_name, self.active_call_id):
+                    stop = True
+                elif self.option_steps_left <= 0:
+                    stop = True
+
+            if stop:
+                # Clear commitment
+                self.active_option_idx = None
+                self.active_call_id = None
+                self.option_steps_left = 0
+
+        return obs, float(r), bool(terminated), bool(truncated), info
 
     # Optional passthroughs
     def render(self):
         return self.env.render()
+
     def close(self):
         return self.env.close()
-
-
-# --- your env imports here ---
-# from craftax_env import CraftaxTopDownEnv
-# from options_env import OptionsOnTopEnv
-
-def print_options_mask(tag, mask, start, count):
-    opts = mask[start:start+count]
-    # print(f"{tag} options mask: {opts.tolist()}")
 
 if __name__ == "__main__":
     # Build envs
