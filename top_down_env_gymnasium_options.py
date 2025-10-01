@@ -7,6 +7,16 @@ from top_down_env_gymnasium import CraftaxTopDownEnv
 
 from option_helpers import *
 
+import numpy as np
+import random
+import random
+import numpy as np
+import imageio
+
+import random
+import numpy as np
+import imageio
+
 class OptionsOnTopEnv(gym.Env):
     """
     Wraps CraftaxTopDownEnv to expose a Discrete action space:
@@ -60,6 +70,8 @@ class OptionsOnTopEnv(gym.Env):
 
         self.debug_record_frames = None
 
+        self.active_option = None
+
         
 
     # ---------- utilities ----------
@@ -81,22 +93,32 @@ class OptionsOnTopEnv(gym.Env):
     def action_masks(self):
         P, K = self.num_primitives, self.num_options
         prim_mask = np.ones(P, dtype=bool)
+
         if K == 0:
             return prim_mask
 
-        # If we haven't reset yet, be conservative: only primitives are valid
         if self.current_obs is None:
-            return np.concatenate([prim_mask, np.zeros(K, dtype=bool)], axis=0)
+            return np.concatenate([prim_mask, np.zeros(K, dtype=bool)])
 
-        # state -> boolean mask for all models["skills"], based on OBS
+        if self.active_option is not None:
+            # Option is currently running; you can constrain choices.
+            # Example: only allow “continue same option” and primitives.
+            skills_order = self.models["skills"]
+            idx_map = {s: i for i, s in enumerate(skills_order)}
+            opt_mask = np.zeros(K, dtype=bool)
+            opt_mask[[self.skills.index(self.active_option)]] = True
+
+            # print("Active option mask:", opt_mask)
+
+            return np.concatenate([prim_mask, opt_mask])
+
+        # No active option -> compute availability as you already do
         frame = self._as_uint8_frame(self.current_obs)
-        full_mask = available_skills(self.models, frame)  # aligned to models["skills"]
-
-        # remap to current exposed subset
+        full_mask = available_skills(self.models, frame)
         skills_order = self.models["skills"]
         idx_map = {s: i for i, s in enumerate(skills_order)}
         opt_mask = np.array([full_mask[idx_map[s]] for s in self.skills], dtype=bool)
-        return np.concatenate([prim_mask, opt_mask], axis=0)
+        return np.concatenate([prim_mask, opt_mask])
 
     # ---------- Gymnasium API ----------
     def reset(self, *, seed=None, options=None):
@@ -115,68 +137,41 @@ class OptionsOnTopEnv(gym.Env):
 
         P, K = self.num_primitives, self.num_options
 
-        # --- Case 1: primitive action -> single low-level step
+        # print("Step called with active option:", self.active_option)
+
+        # Determine which option (if any) should be active for *this* step
         if a < P:
-            obs, r, terminated, truncated, info = self.env.step(a)
-            self.current_obs = obs  # update latest obs
-            self.elapsed_macro_steps += 1
-            return obs, float(r), bool(terminated), bool(truncated), info
+            # agent picked a primitive -> clear any active option and execute that primitive
 
-        # --- Case 2: option/skill -> run BC until termination
-        # print("Running option", a - P, "(", self.skills[a - P], ")")
-        skill_id = a - P  # skill id in [0..K-1]
-        skill_name = self.skills[skill_id]
-        total_reward = 0.0
-        discount = 1.0
-        inner_steps = 0
-        terminated = False
-        truncated = False
-        last_info = {}
+            # print("Picked primitive action:", a, "clearing active option.")
 
-        # start from the latest obs
-        obs_local = self.current_obs
-        # if obs_local is None:
-        #     # print("No current observation available, resetting environment.")
-        #     # If step called before reset, fall back to env.reset()
-        #     obs_local, _ = self.env.reset()
-        #     self.current_obs = obs_local
+            self.active_option = None
+            prim_action = a
 
-        
-        while True:
-            # print(f" Option {skill_name} step {inner_steps+1}")
-            frame = self._as_uint8_frame(obs_local)
-            prim_action = int(bc_policy(self.models, frame, skill_name))
-            if prim_action < 0 or prim_action >= P:
-                raise error.InvalidAction(f"bc_policy returned invalid primitive {prim_action} (P={P})")
+        else:
+            # agent picked an option
+            # print("Picked option :", a)
+            picked_skill_id = a - P
+            picked_skill = self.skills[picked_skill_id]
+            # set or keep active option
+            self.active_option = picked_skill
+            # compute exactly ONE primitive to execute this step via BC:
+            frame = self._as_uint8_frame(self.current_obs)
+            prim_action = int(bc_policy(self.models, frame, self.active_option))
+            # (validate prim_action in [0, P-1])
 
-            obs_local, r, term, trunc, info = self.env.step(prim_action)
+        # ---- one primitive step only ----
+        obs, r, terminated, truncated, info = self.env.step(prim_action)
+        self.current_obs = obs
+        self.elapsed_macro_steps += 1  # optional bookkeeping
 
-            if self.debug_record_frames is not None:
-                self.debug_record_frames.append(obs_local.copy())
+        # Option termination check (runs every step while active)
+        if self.active_option is not None:
+            if terminated or truncated or should_terminate(self.models, self._as_uint8_frame(obs), self.active_option):
+                # print("Option", self.active_option, "terminated due to end ep or model.")
+                self.active_option = None
 
-            last_info = info
-            total_reward += discount * float(r)
-            discount *= self.gamma
-            inner_steps += 1
-
-            # termination checks (always via OBS)
-            if term or trunc:
-                terminated, truncated = bool(term), bool(trunc)
-                # print(f"Option {skill_name} ended due to env done after {inner_steps} steps.")
-                break
-            if should_terminate(self.models, self._as_uint8_frame(obs_local), skill_name):
-                # print(f"Option {skill_name} terminated after {inner_steps} steps due to model.")
-                break
-            if inner_steps >= self.max_skill_len:
-                # print(f"Option {skill_name} reached max_skill_len={self.max_skill_len}, stopping.")
-                break
-        
-            
-
-        # commit the final obs from the option rollout
-        self.current_obs = obs_local
-        self.elapsed_macro_steps += 1
-        return obs_local, float(total_reward), terminated, truncated, last_info
+        return obs, float(r), bool(terminated), bool(truncated), info
 
     # Optional passthroughs
     def render(self):
@@ -184,19 +179,7 @@ class OptionsOnTopEnv(gym.Env):
     def close(self):
         return self.env.close()
     
-import numpy as np
-import random
-import random
-import numpy as np
-import imageio
 
-import random
-import numpy as np
-import imageio
-
-# --- your env imports here ---
-# from craftax_env import CraftaxTopDownEnv
-# from options_env import OptionsOnTopEnv
 
 def print_options_mask(tag, mask, start, count):
     opts = mask[start:start+count]
