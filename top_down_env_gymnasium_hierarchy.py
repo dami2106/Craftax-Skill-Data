@@ -30,8 +30,6 @@ from option_helpers import (
     should_terminate,          # now phase/instance-aware
 )
 
-import cv2
-
 class OptionsOnTopEnv(gym.Env):
     """
     Wraps CraftaxTopDownEnv to expose a Discrete action space:
