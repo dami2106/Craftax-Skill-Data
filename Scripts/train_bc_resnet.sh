@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=bc_cnn_craftax       # Job name
+#SBATCH --job-name=bc_resnet_craftax       # Job name
 #SBATCH --partition=bigbatch                     # Replace with your cluster's GPU partition name
-#SBATCH --output=/home-mscluster/dharvey/HiSD/Experiments/bc_resnet.out  # Standard output and error log
+#SBATCH --output=/home-mscluster/dharvey/HiSD/Experiments/bc_resnet_sp_static.out  # Standard output and error log
 # Load your environment
 
 source ~/.bashrc
