@@ -12,14 +12,14 @@ from torchvision.models import resnet18, resnet34, ResNet18_Weights, ResNet34_We
 # -------------------------
 # Data utilities
 # -------------------------
-def get_bc_images_by_episode(dir_, files, skill, image_dir_name='top_down_obs'):
+def get_bc_images_by_episode(dir_, files, skill, image_dir_name='top_down_obs', skill_dir_name='groundTruth'):
     """
     Loads raw images per-episode (NHWC float32 in [0,1]) and actions.
-    Splits each episode into skill vs other frames via your groundTruth labels.
+    Splits each episode into skill vs other frames via your
     """
     episodes = []
     for file in files:
-        with open(os.path.join(dir_, 'groundTruth', file), 'r') as f:
+        with open(os.path.join(dir_, skill_dir_name, file), 'r') as f:
             lines = f.read().splitlines()  # len = T
 
         img_path = os.path.join(dir_, image_dir_name, file + '.npy')
@@ -154,6 +154,8 @@ def main():
     parser = argparse.ArgumentParser(description="Train ResNet policy for a specific skill")
     parser.add_argument("--skill", type=str, default="wood", help="Skill to train")
     parser.add_argument("--dir", type=str, default="Traces/stone_pick_static", help="Dataset root")
+    parser.add_argument("--skills_name", type=str, default="groundTruth", help="Dataset root")
+    parser.add_argument("--save_dir", type=str, default="bc_checkpoints", help="Dataset root")
     parser.add_argument("--image_dir_name", type=str, default="top_down_obs", help="Subdir with per-episode .npy images")
     parser.add_argument("--backbone", type=str, default="resnet34", choices=["resnet18", "resnet34"])
     parser.add_argument("--batch_size", type=int, default=64)
@@ -165,13 +167,13 @@ def main():
     args = parser.parse_args()
 
     dir_ = args.dir
-    skills_dir = os.path.join(dir_, 'groundTruth')
+    skills_dir = os.path.join(dir_, args.skills_name)
     files = os.listdir(skills_dir)
     # unique_skills = get_unique_skills(skills_dir, files)
     skill = args.skill
 
     print(f"===== TRAINING SKILL {skill} (ResNet, pretrained) =====")
-    episodes = get_bc_images_by_episode(dir_, files, skill, image_dir_name=args.image_dir_name)
+    episodes = get_bc_images_by_episode(dir_, files, skill, image_dir_name=args.image_dir_name, skill_dir_name=args.skills_name)
 
     # Splits by episode
     rng = np.random.default_rng(0)
@@ -259,7 +261,8 @@ def main():
     es_patience = 15
     bad = 0
 
-    ckpt_dir = os.path.join(dir_, 'bc_checkpoints')
+
+    ckpt_dir = os.path.join(dir_, args.save_dir)
     os.makedirs(ckpt_dir, exist_ok=True)
     ckpt_path = os.path.join(ckpt_dir, f'{skill}_policy_{args.backbone}_pt.pt')
 
