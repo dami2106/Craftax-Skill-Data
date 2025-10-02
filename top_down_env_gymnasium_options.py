@@ -24,14 +24,30 @@ class OptionsOnTopEnv(gym.Env):
         num_primitives: int = 16,
         gamma: float = 0.99,
         max_skill_len: int = 50,      # hard cap on how many primitive steps an active option may run
+        
+        skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],            # list of skill names to load (None = all available)
+        root: str = 'Traces/stone_pickaxe_easy',
+        bc_checkpoint_dir: str = 'bc_checkpoints_resnet',
+        pca_model_path: str = 'pca_models/pca_model_750.joblib',
+        pu_start_models_dir: str = 'pu_start_models',
+        pu_end_models_dir: str = 'pu_end_models',
     ):
         super().__init__()
         self.env = base_env
         self.gamma = float(gamma)
         self.max_skill_len = int(max_skill_len)
 
-        # Models / skills
-        self.models = load_all_models()
+
+        self.models = load_all_models(
+            skill_list = skill_list,
+            root = root,
+            bc_checkpoint_dir = bc_checkpoint_dir,
+            pca_model_path = pca_model_path,
+            pu_start_models_dir = pu_start_models_dir,
+            pu_end_models_dir = pu_end_models_dir,
+        
+        )
+
         self.skills = self.models["skills"]  # list of skill names
 
         # ---- Action space mapping

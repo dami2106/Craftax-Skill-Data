@@ -20,7 +20,36 @@ from gymnasium.wrappers import TimeLimit, RecordEpisodeStatistics
 from sb3_contrib.common.wrappers import ActionMasker
 
 from option_helpers import FixedSeedAlways, to_gif_frame
+import argparse
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--num_primitives", type=int, default=16)
+parser.add_argument("--gamma", type=float, default=0.99)
+parser.add_argument("--max_skill_len", type=int, default=25)
+
+parser.add_argument("--skill_list", nargs="+", default=['wood_pick'])
+parser.add_argument("--symbol_map", type=str, default="truth")
+parser.add_argument("--root", type=str, default='Traces/stone_pickaxe_easy')
+parser.add_argument("--bc_checkpoint_dir", type=str, default='bc_checkpoints_resnet')
+parser.add_argument("--pca_model_path", type=str, default='pca_models/pca_model_750.joblib')
+parser.add_argument("--pu_start_models_dir", type=str, default='pu_start_models')
+parser.add_argument("--pu_end_models_dir", type=str, default='pu_end_models')
+
+parser.add_argument("--run_name", type=str, default='test_ppo_hierarchy')
+
+args, _ = parser.parse_known_args()
+
+
+if args.symbol_map == "truth":
+    symbol_map = {
+        "0": "stone",
+        "1": "stone_pickaxe",
+        "2": "table",
+        "3": "wood",
+        "4": "wood_pickaxe",
+    }
+else:
+    raise ValueError("Unknown symbol_map")
 
 def make_options_env(*, seed: int, render_mode=None, max_episode_steps=100):
     def _thunk():
@@ -33,9 +62,17 @@ def make_options_env(*, seed: int, render_mode=None, max_episode_steps=100):
         )
         core = OptionsOnTopEnv(
             base,
-            num_primitives=16,
-            gamma=0.99,
-            max_skill_len=25,
+            num_primitives=args.num_primitives,
+            gamma=args.gamma,
+            max_skill_len=args.max_skill_len,
+
+            skill_list=args.skill_list,
+            symbol_map=symbol_map,
+            root=args.root,
+            bc_checkpoint_dir=args.bc_checkpoint_dir,
+            pca_model_path=args.pca_model_path,
+            pu_start_models_dir=args.pu_start_models_dir,
+            pu_end_models_dir=args.pu_end_models_dir,
         )
 
         # 1) ActionMasker wraps the env that has `action_masks`
@@ -95,44 +132,34 @@ if __name__ == "__main__":
         verbose=1,
         tensorboard_log="./tb_logs_ppo_craftax",
         device="auto",
+        seed=TRAIN_SEED,
     )
 
 
-    # For evaluation you can reuse the same seed or choose a different fixed seed
-    EVAL_SEED = TRAIN_SEED
-    eval_env_vec = DummyVecEnv([make_options_env(seed=EVAL_SEED, render_mode=None)])
-    eval_env_vec = VecTransposeImage(eval_env_vec)
-    eval_env_vec = VecMonitor(eval_env_vec)
-
-    eval_cb = MaskableEvalCallback(
-        eval_env_vec,
-        eval_freq=500,
-        n_eval_episodes=5,
-        deterministic=True,
-    )
 
     model.learn(
         total_timesteps=100_000,
-        tb_log_name="ppo_wood_pick_hierarchy",   # TB subdir
-        log_interval=10,
+        tb_log_name=args.run_name,   # TB subdir
+        log_interval=1,
         progress_bar=True,
-        callback=eval_cb,
     )
-    model.save("ppo_craftax_wood_pick_hierarchy")
-    obs = eval_env_vec.reset()
-    frames = [to_gif_frame(obs)]
+    model.save(args.run_name)
 
-    done = False
-    steps = 0
-    while not done and steps < 100:
-        # Pull masks from the FIRST sub-env (vectorized)
-        masks = get_action_masks(eval_env_vec)
-        action, _ = model.predict(obs, action_masks=masks, deterministic=True)
-        obs, reward, terminated, info = eval_env_vec.step(action)
-        frames.append(to_gif_frame(obs))
-        done = bool(terminated[0])
-        print("Step:", steps, "Action:", action, "Reward:", reward, "Done:", done)
-        steps += 1
 
-    imageio.mimsave("craftax_ppo_wood_pick_hierarchy_eval.gif", frames, fps=5)
+    # obs = eval_env_vec.reset()
+    # frames = [to_gif_frame(obs)]
+
+    # done = False
+    # steps = 0
+    # while not done and steps < 100:
+    #     # Pull masks from the FIRST sub-env (vectorized)
+    #     masks = get_action_masks(eval_env_vec)
+    #     action, _ = model.predict(obs, action_masks=masks, deterministic=True)
+    #     obs, reward, terminated, info = eval_env_vec.step(action)
+    #     frames.append(to_gif_frame(obs))
+    #     done = bool(terminated[0])
+    #     print("Step:", steps, "Action:", action, "Reward:", reward, "Done:", done)
+    #     steps += 1
+
+    # imageio.mimsave("craftax_ppo_wood_pick_hierarchy_eval.gif", frames, fps=5)
 

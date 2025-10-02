@@ -35,20 +35,6 @@ if __name__ == "__main__":
     train_env = VecTransposeImage(train_env)  # HWC -> CHW for CnnPolicy
     train_env = VecMonitor(train_env)
 
-
-    eval_env = DummyVecEnv([make_env(seed=SEED)])
-    eval_env = VecTransposeImage(eval_env)
-    eval_env = VecMonitor(eval_env)
-    
-    # Evaluation callback: evaluate every eval_freq steps on eval_env and save the best model
-    eval_callback = EvalCallback(
-        eval_env,
-        eval_freq=500,
-        n_eval_episodes=5,
-        deterministic=True,
-        render=False,
-    )
-    
     # model = PPO.load("ppo_craftax_wood_ppo_actions")
 
     model = PPO(
@@ -62,30 +48,30 @@ if __name__ == "__main__":
     )
 
     model.learn(
-        total_timesteps=500_000,
-        log_interval=10,
+        total_timesteps=100_000,
+        log_interval=1,
         tb_log_name="ppo_wood_pick_actions",
         progress_bar=True,
-        callback=eval_callback,
     )
+    
     model.save("ppo_craftax_wood_pick_actions")
 
     # -------- Eval vec env (choose a seed; use same wrapper for fixed-seed eval) --------
     
 
-    obs = eval_env.reset()
-    images = [to_gif_frame(obs)]
+    # obs = eval_env.reset()
+    # images = [to_gif_frame(obs)]
 
-    done = False
-    steps = 0
-    while not done and steps < 100:
-        action, _ = model.predict(obs, deterministic=True)
-        obs, rewards, dones, infos = eval_env.step(action)
-        images.append(to_gif_frame(obs))
-        done = bool(dones[0])
+    # done = False
+    # steps = 0
+    # while not done and steps < 100:
+    #     action, _ = model.predict(obs, deterministic=True)
+    #     obs, rewards, dones, infos = eval_env.step(action)
+    #     images.append(to_gif_frame(obs))
+    #     done = bool(dones[0])
 
-        print("Step:", steps, "Action:", action, "Reward:", rewards, "Done:", done)
+    #     print("Step:", steps, "Action:", action, "Reward:", rewards, "Done:", done)
 
-        steps += 1
+    #     steps += 1
 
-    imageio.mimsave(f"craftax_ppo_wood_pick_actions_eval.gif", images, fps=1)
+    # imageio.mimsave(f"craftax_ppo_wood_pick_actions_eval.gif", images, fps=1)

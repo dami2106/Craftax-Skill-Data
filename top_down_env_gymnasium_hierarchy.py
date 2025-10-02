@@ -32,24 +32,43 @@ class OptionsOnTopEnv(gym.Env):
         num_primitives: int = 17,
         gamma: float = 0.99,
         max_skill_len: int = 100,   # per-leaf cap; composites scale by number of leaves
+
+        skill_list=['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],
+        hierarchies_dir='Traces/stone_pickaxe_easy/hierarchy_data/Simple',
+        symbol_map={
+            "0": "stone",
+            "1": "stone_pickaxe",
+            "2": "table",
+            "3": "wood",
+            "4": "wood_pickaxe",
+        },
+        root: str = 'Traces/stone_pickaxe_easy',
+        backbone_hint:  str = 'resnet34',
+        bc_checkpoint_dir: str = 'bc_checkpoints_resnet',
+        pca_model_path: str = 'pca_models/pca_model_750.joblib',
+        pu_start_models_dir: str = 'pu_start_models',
+        pu_end_models_dir: str = 'pu_end_models',
+
     ):
         super().__init__()
         self.env = base_env
         self.gamma = float(gamma)
         self.max_skill_len = int(max_skill_len)
 
+
         # Models / skills (supports composite skills + instance-scoped runtime)
         self.models = load_all_models_hierarchy(
-            skill_list=['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],
-            hierarchies_dir='Traces/stone_pickaxe_easy/hierarchy_data/Simple',
-            symbol_map={
-                "0": "stone",
-                "1": "stone_pickaxe",
-                "2": "table",
-                "3": "wood",
-                "4": "wood_pickaxe",
-            }
+            skill_list,
+            hierarchies_dir,
+            symbol_map,
+            root,
+            backbone_hint,
+            bc_checkpoint_dir,
+            pca_model_path,
+            pu_start_models_dir,
+            pu_end_models_dir,
         )
+
         self.skills = self.models["skills"]
         self.num_options = len(self.skills)
 

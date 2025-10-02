@@ -629,9 +629,13 @@ def load_all_models_hierarchy(
     hierarchies_dir: Optional[str] = None,
     symbol_map:     Optional[Dict[str, str]] = None,
     root:           str = 'Traces/stone_pickaxe_easy',
-    backbone_hint:  str = 'resnet18',
+    backbone_hint:  str = 'resnet34',
+    bc_checkpoint_dir: str = 'bc_checkpoints_resnet',
+    pca_model_path: str = 'pca_models/pca_model_750.joblib',
+    pu_start_models_dir: str = 'pu_start_models',
+    pu_end_models_dir: str = 'pu_end_models',
 ):
-    ckpt_dir = os.path.join(root, 'bc_checkpoints_resnet')
+    ckpt_dir = os.path.join(root, bc_checkpoint_dir)
     bc_models = {}
 
     def _find_ckpt(skill: str) -> str:
@@ -653,17 +657,17 @@ def load_all_models_hierarchy(
         ckpt_path = _find_ckpt(skill)
         bc_models[skill] = load_policy(ckpt_path)
 
-    artifacts = joblib.load(os.path.join(root, 'pca_models', 'pca_model_750.joblib'))
+    artifacts = joblib.load(os.path.join(root, pca_model_path))
     scaler = artifacts['scaler']
     pca = artifacts['pca']
     n_features_expected = scaler.mean_.shape[0]
 
-    pu_start_models = load_pu_start_models(os.path.join(root, 'pu_start_models'))
+    pu_start_models = load_pu_start_models(os.path.join(root, pu_start_models_dir))
 
     pu_end_models = {}
     for skill in skill_list:
         try:
-            pu_end_models[skill] = load_pu_end_model(os.path.join(root, 'pu_end_models'), skill)
+            pu_end_models[skill] = load_pu_end_model(os.path.join(root, pu_end_models_dir), skill)
         except FileNotFoundError:
             print(f"[WARN] No PU end model for skill '{skill}'")
 
