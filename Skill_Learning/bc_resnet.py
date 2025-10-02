@@ -12,7 +12,7 @@ from torchvision.models import resnet18, resnet34, ResNet18_Weights, ResNet34_We
 # -------------------------
 # Data utilities
 # -------------------------
-def get_bc_images_by_episode(dir_, files, skill, image_dir_name='pixel_obs'):
+def get_bc_images_by_episode(dir_, files, skill, image_dir_name='top_down_obs'):
     """
     Loads raw images per-episode (NHWC float32 in [0,1]) and actions.
     Splits each episode into skill vs other frames via your groundTruth labels.
@@ -29,7 +29,8 @@ def get_bc_images_by_episode(dir_, files, skill, image_dir_name='pixel_obs'):
         actions = np.load(act_path)   # [T]
 
         if len(lines) != len(actions):
-            lines = lines.append(lines[-1])
+            lines.append(lines[-1])
+
 
         if len(lines) != len(images) or len(images) != len(actions):
             raise ValueError(
@@ -152,8 +153,8 @@ class ResNetPolicy(nn.Module):
 def main():
     parser = argparse.ArgumentParser(description="Train ResNet policy for a specific skill")
     parser.add_argument("--skill", type=str, default="wood", help="Skill to train")
-    parser.add_argument("--dir", type=str, default="Traces/stone_pickaxe_easy", help="Dataset root")
-    parser.add_argument("--image_dir_name", type=str, default="pixel_obs", help="Subdir with per-episode .npy images")
+    parser.add_argument("--dir", type=str, default="Traces/stone_pick_static", help="Dataset root")
+    parser.add_argument("--image_dir_name", type=str, default="top_down_obs", help="Subdir with per-episode .npy images")
     parser.add_argument("--backbone", type=str, default="resnet34", choices=["resnet18", "resnet34"])
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=150)
@@ -164,8 +165,9 @@ def main():
     args = parser.parse_args()
 
     dir_ = args.dir
-    files = os.listdir(os.path.join(dir_, 'groundTruth'))
-    unique_skills = get_unique_skills(dir_, files)
+    skills_dir = os.path.join(dir_, 'groundTruth')
+    files = os.listdir(skills_dir)
+    # unique_skills = get_unique_skills(skills_dir, files)
     skill = args.skill
 
     print(f"===== TRAINING SKILL {skill} (ResNet, pretrained) =====")
