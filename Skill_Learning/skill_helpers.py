@@ -18,6 +18,26 @@ from pathlib import Path
 # --------------------------------------------------------------------------------------
 
 
+def get_fake_acts_shift_gt(gt):
+
+    if not gt:
+        return None
+    
+    changes = []
+    for i in range(1, len(gt)):
+        if gt[i] != gt[i-1]:
+            changes.append(i)
+    changes.append(len(gt))
+    changes = np.array(changes) 
+    changes = changes - 1
+
+    actions = np.zeros(len(gt) + 1)
+    actions[changes] = 5
+
+    shifted_gt = gt.copy()
+    shifted_gt.insert(0, gt[0])
+    
+    return actions, shifted_gt
 
 def get_unique_skills(dir_, files):
     unique_skills = set()
