@@ -8,8 +8,8 @@ import joblib
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--data_dir", type=str, default="Traces/stone_pickaxe_easy", help="Path to the data directory")
-parser.add_argument("--components", type=int, default=1000, help="Number of PCA components")
+parser.add_argument("--data_dir", type=str, default="Traces/stone_pick_static", help="Path to the data directory")
+parser.add_argument("--components", type=int, default=650, help="Number of PCA components")
 args = parser.parse_args()
 
 COMPONENTS = args.components
@@ -18,7 +18,7 @@ COMPONENTS = args.components
 DATA_DIR = Path(os.path.dirname(__file__)) / args.data_dir
 OUTPUT_DIR = DATA_DIR / f'pca_features_{COMPONENTS}'   # change to DATA_DIR if you want them alongside inputs
 MODEL_PATH = DATA_DIR / 'pca_models' / f'pca_model_{COMPONENTS}.joblib'  # path to your saved model
-IMG_SHAPE = (274, 274, 3)                # for sanity checks (optional)
+IMG_SHAPE = (274, 274, 3)               # for sanity checks (optional)
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -41,21 +41,52 @@ def output_name_for(input_path: Path) -> Path:
     return OUTPUT_DIR / f"{stem}.npy"
 
 # ---- Process each file independently (no shuffling) ----
-raw_dir = DATA_DIR / 'raw_data'
+# raw_dir = DATA_DIR / 'raw_data'
+# if not raw_dir.exists():
+#     raise FileNotFoundError(f"Raw data directory not found: {raw_dir}")
+
+# for in_path in tqdm(sorted(raw_dir.glob('*.pkl.gz'))):
+#     out_path = output_name_for(in_path)
+
+#     if out_path.exists():
+#         continue
+
+#     with gzip.open(in_path, 'rb') as f:
+#         data = pickle.load(f)
+#         if 'all_obs' not in data:
+#             raise KeyError(f"'all_obs' key missing in {in_path}")
+#         imgs = data['all_obs']
+
+#     imgs = np.asarray(imgs, dtype=np.float32)
+#     n, h, w, c = imgs.shape
+#     if (h, w, c) != IMG_SHAPE:
+#         print(f"Warning: {in_path.name} has shape {(h,w,c)} != {IMG_SHAPE}")
+
+#     X = imgs.reshape(n, -1)
+#     if X.shape[1] != n_features_expected:
+#         raise ValueError(
+#             f"Feature size mismatch for {in_path.name}: got {X.shape[1]}, "
+#             f"model expects {n_features_expected}"
+#         )
+
+#     X_centered = scaler.transform(X)
+#     X_feats = pca.transform(X_centered)
+
+#     np.save(out_path, X_feats)
+
+# ---- Process each file independently (no shuffling) ----
+
+raw_dir = DATA_DIR / 'top_down_obs'
 if not raw_dir.exists():
     raise FileNotFoundError(f"Raw data directory not found: {raw_dir}")
 
-for in_path in tqdm(sorted(raw_dir.glob('*.pkl.gz'))):
+for in_path in tqdm(sorted(raw_dir.glob('*.npy'))):
     out_path = output_name_for(in_path)
 
     if out_path.exists():
         continue
 
-    with gzip.open(in_path, 'rb') as f:
-        data = pickle.load(f)
-        if 'all_obs' not in data:
-            raise KeyError(f"'all_obs' key missing in {in_path}")
-        imgs = data['all_obs']
+    imgs = np.load(in_path)
 
     imgs = np.asarray(imgs, dtype=np.float32)
     n, h, w, c = imgs.shape

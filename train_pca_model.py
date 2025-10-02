@@ -18,8 +18,8 @@ import argparse
 # Config
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--data_dir", type=str, default="Traces/stone_pickaxe_easy", help="Path to the data directory")
-parser.add_argument("--components", type=int, default=1000, help="Number of PCA components")
+parser.add_argument("--data_dir", type=str, default="Traces/stone_pick_static", help="Path to the data directory")
+parser.add_argument("--components", type=int, default=650, help="Number of PCA components")
 args = parser.parse_args()
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), args.data_dir)
@@ -30,13 +30,20 @@ os.makedirs(DATA_DIR + '/pca_models', exist_ok=True)
 # -----------------------
 # 1) Load images
 # -----------------------
+# all_images = []
+# for filename in tqdm(os.listdir(DATA_DIR + '/raw_data')):
+#     if filename.endswith('.pkl.gz'):
+#         file_path = os.path.join(DATA_DIR + '/raw_data', filename)
+#         with gzip.open(file_path, 'rb') as f:
+#             data = pickle.load(f)
+#             all_images.extend(data['all_obs'])
+
 all_images = []
-for filename in tqdm(os.listdir(DATA_DIR + '/raw_data')):
-    if filename.endswith('.pkl.gz'):
-        file_path = os.path.join(DATA_DIR + '/raw_data', filename)
-        with gzip.open(file_path, 'rb') as f:
-            data = pickle.load(f)
-            all_images.extend(data['all_obs'])
+for filename in tqdm(os.listdir(DATA_DIR + '/top_down_obs')):
+    if filename.endswith('.npy'):
+        file_path = os.path.join(DATA_DIR + '/top_down_obs', filename)
+        imgs = np.load(file_path)
+        all_images.extend(imgs)
 
 all_images = np.array(all_images, dtype=np.float32)
 print("All images loaded", all_images.shape)  # (N, 274, 274, 3)
