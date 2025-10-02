@@ -40,17 +40,22 @@ parser.add_argument("--run_name", type=str, default='test_ppo_hierarchy')
 
 args, _ = parser.parse_known_args()
 
-
 if args.symbol_map == "truth":
     symbol_map = {
-        "0": "stone",
-        "1": "stone_pickaxe",
+        "0": "wooden_pickaxe",
+        "1": "stone",
         "2": "table",
-        "3": "wood",
-        "4": "wood_pickaxe",
+        "3": "stone_pickaxe",
+        "4": "wood",
     }
 else:
-    raise ValueError("Unknown symbol_map")
+    symbol_map = {
+        "0": "0",
+        "1": "1",
+        "2": "2",
+        "3": "3",
+        "4": "4",
+    }
 
 def make_options_env(*, seed: int, render_mode=None, max_episode_steps=100):
     def _thunk():
