@@ -23,13 +23,26 @@ from skill_helpers import *  # assumes build_endability_dataset, get_unique_skil
 SEED = 42
 rng = np.random.default_rng(SEED)
 
-dir_ = 'Traces/stone_pick_static/stone_pick_static/stone_pick_static_pixels_big'
-models_dir = os.path.join(dir_, 'pu_end_models')
+parser = argparse.ArgumentParser(description="Train PU-learning models for skill endability.")
+parser.add_argument('--dir', type=str, default='Traces/stone_pick_static', help='Base directory for data')
+parser.add_argument('--skills_dirname', type=str, default='asot_predicted', help='Subdirectory for skills')
+parser.add_argument('--features_name', type=str, default='pca_features_650', help='Feature set name')
+parser.add_argument('--old_data_mode', action='store_true', help='Use old data mode')
+parser.add_argument('--save_dir', type=str, default='pu_end_models', help='Directory to save models and results (default: <dir>/pu_start_models_asot)')
+args = parser.parse_args()
+
+dir_ = args.dir
+skills_dirname = args.skills_dirname
+features_name = args.features_name
+old_data_mode = args.old_data_mode
+
+if old_data_mode:
+    print("[WARN] Using OLD DATA MODE (for compatibility with older datasets)")
+
+models_dir = os.path.join(dir_, args.save_dir )
 os.makedirs(models_dir, exist_ok=True)
-skills_dir = os.path.join(dir_, 'groundTruth')
+skills_dir = os.path.join(dir_, skills_dirname)
 files = os.listdir(skills_dir)
-features_name = 'pca_features'
-old_data_mode = True
 
 # ----------------------------
 # PU builder
@@ -181,7 +194,7 @@ skills = get_unique_skills(skills_dir, files)
 
 for skill in skills:
     # Load dataset
-    X, y, groups = build_endability_dataset(dir_, skill, files, features_dirname=features_name, old_data_mode=old_data_mode)
+    X, y, groups = build_endability_dataset(dir_, skill, files, features_dirname=features_name, old_data_mode=old_data_mode, skills_dir=skills_dirname)
 
     # Shuffle for reproducibility
     rng_np = np.random.RandomState(SEED)

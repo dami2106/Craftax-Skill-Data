@@ -470,7 +470,7 @@ def compute_class_weights(y, n_classes):
     return torch.tensor(inv, dtype=torch.float32)
 
 
-def build_startability_dataset(dir_: str, skill: str, files, features_dirname='pca_features_512', old_data_mode = False):
+def build_startability_dataset(dir_: str, skill: str, files, features_dirname='pca_features_512', old_data_mode = False, skills_dir='groundTruth'):
     """
     Returns X, y, groups where groups[i] is the episode id (filename) for X[i].
     Positives: all states of `skill` except each segment's last state.
@@ -486,7 +486,7 @@ def build_startability_dataset(dir_: str, skill: str, files, features_dirname='p
     # positive/negative selection while recording episode ids per frame.
     pos, neg, grp = [], [], []
 
-    gt_dir   = Path(dir_) / 'groundTruth'
+    gt_dir   = Path(dir_) / skills_dir
     act_dir  = Path(dir_) / 'actions'
     feat_dir = Path(dir_) / features_dirname
 
@@ -559,7 +559,7 @@ def build_startability_dataset(dir_: str, skill: str, files, features_dirname='p
 
     return X, y, groups
 
-def build_endability_dataset(dir_: str, skill: str, files, features_dirname='pca_features_512', old_data_mode = False):
+def build_endability_dataset(dir_: str, skill: str, files, features_dirname='pca_features_512', old_data_mode = False, skills_dir='groundTruth'):
     """
     Build (X, y, groups) for END-state prediction of `skill`.
     Positives: last frame of each `skill` segment (end_states)
@@ -567,7 +567,7 @@ def build_endability_dataset(dir_: str, skill: str, files, features_dirname='pca
                i.e., negative_end_all = (skill frames except last) + (all other-skill frames)
     groups: episode id (filename) per frame.
     """
-    gt_dir   = os.path.join(dir_, 'groundTruth')
+    gt_dir   = os.path.join(dir_, skills_dir)
     act_dir  = os.path.join(dir_, 'actions')
     feat_dir = os.path.join(dir_, features_dirname)
 
