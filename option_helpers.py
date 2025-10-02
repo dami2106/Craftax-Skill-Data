@@ -276,7 +276,7 @@ def load_all_models(skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickax
                     pu_end_models_dir: str = 'pu_end_models'):
     bc_models = {}
     for skill in skill_list:
-        ckpt_path = os.path.join(bc_checkpoint_dir, f'{skill}_policy_resnet34_pt.pt')
+        ckpt_path = os.path.join(root, bc_checkpoint_dir, f'{skill}_policy_resnet34_pt.pt')
         bc_models[skill] = load_policy(ckpt_path)
 
     artifacts = joblib.load(os.path.join(root, pca_model_path))
