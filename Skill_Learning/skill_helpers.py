@@ -42,7 +42,7 @@ def get_fake_acts_shift_gt(gt):
 def get_unique_skills(dir_, files):
     unique_skills = set()
     for file in files:
-        with open(os.path.join(dir_ + '/groundTruth', file), 'r') as f:
+        with open(os.path.join(dir_, file), 'r') as f:
             lines = f.read().splitlines()
         unique_skills.update(lines)
     return unique_skills
@@ -470,17 +470,17 @@ def compute_class_weights(y, n_classes):
     return torch.tensor(inv, dtype=torch.float32)
 
 
-def build_startability_dataset(dir_: str, skill: str, files, features_dirname='pca_features_512'):
+def build_startability_dataset(dir_: str, skill: str, files, features_dirname='pca_features_512', old_data_mode = False):
     """
     Returns X, y, groups where groups[i] is the episode id (filename) for X[i].
     Positives: all states of `skill` except each segment's last state.
     Negatives: end states of `skill` + all states from other skills.
     """
-    # reuse your existing segmentation logic
-    (start_states, end_states, all_skill_states,
-     negative_end_skill, negative_end_all, all_other_states) = get_start_end_states(
-        dir_, skill, features_dirname=features_dirname
-    )
+    # # reuse your existing segmentation logic
+    # (start_states, end_states, all_skill_states,
+    #  negative_end_skill, negative_end_all, all_other_states) = get_start_end_states(
+    #     dir_, skill, features_dirname=features_dirname
+    # )
 
     # We also need to rebuild groups, so iterate files again and mirror the exact
     # positive/negative selection while recording episode ids per frame.
@@ -493,9 +493,24 @@ def build_startability_dataset(dir_: str, skill: str, files, features_dirname='p
     for file in files:
         with open(gt_dir / file, 'r') as f:
             truths = f.read().splitlines()
+        
         feats   = np.load(feat_dir / f'{file}.npy')
-        acts    = np.load(act_dir  / f'{file}.npy')
+
+        if old_data_mode:
+            acts, truths = get_fake_acts_shift_gt(truths)
+        else:
+            acts = np.load(act_dir  / f'{file}.npy')
+
+        # print(file)
+        # print(feats.shape)
+        # print(acts.shape)
+        # print(len(truths))
+        # print(acts)
+        # print(truths)
         segs_for_skill = make_skill_segments(acts, truths)
+        # print(segs_for_skill)
+        
+
 
         for skill_name, segs in segs_for_skill.items():
             for seg in segs:
@@ -510,6 +525,8 @@ def build_startability_dataset(dir_: str, skill: str, files, features_dirname='p
                     # negatives: all frames from other skills
                     neg.append(feats[seg])
 
+     
+
     X_pos = np.concatenate(pos, axis=0) if len(pos) else np.empty((0, feats.shape[1]))
     X_neg = np.concatenate(neg, axis=0) if len(neg) else np.empty((0, feats.shape[1]))
     g_pos = np.concatenate(grp, axis=0) if len(grp) else np.empty((0,), dtype=object)
@@ -520,7 +537,12 @@ def build_startability_dataset(dir_: str, skill: str, files, features_dirname='p
         with open(gt_dir / file, 'r') as f:
             truths = f.read().splitlines()
         feats   = np.load(feat_dir / f'{file}.npy')
-        acts    = np.load(act_dir  / f'{file}.npy')
+
+        if old_data_mode:
+            acts, truths = get_fake_acts_shift_gt(truths)
+        else:
+            acts    = np.load(act_dir  / f'{file}.npy')
+
         segs_for_skill = make_skill_segments(acts, truths)
         for skill_name, segs in segs_for_skill.items():
             for seg in segs:
@@ -537,7 +559,7 @@ def build_startability_dataset(dir_: str, skill: str, files, features_dirname='p
 
     return X, y, groups
 
-def build_endability_dataset(dir_: str, skill: str, files, features_dirname='pca_features_512'):
+def build_endability_dataset(dir_: str, skill: str, files, features_dirname='pca_features_512', old_data_mode = False):
     """
     Build (X, y, groups) for END-state prediction of `skill`.
     Positives: last frame of each `skill` segment (end_states)
@@ -556,9 +578,13 @@ def build_endability_dataset(dir_: str, skill: str, files, features_dirname='pca
         with open(os.path.join(gt_dir, file), 'r') as f:
             truths = f.read().splitlines()
         feats   = np.load(os.path.join(feat_dir, f'{file}.npy'))
-        acts    = np.load(os.path.join(act_dir,  f'{file}.npy'))
 
-        segs_for_skill = make_skill_segments(acts, truths)  # {skill_name: [ [idxs...], ... ]}
+        if old_data_mode:
+            acts, truths = get_fake_acts_shift_gt(truths)
+        else:
+            acts = np.load(os.path.join(act_dir,  f'{file}.npy'))
+
+        segs_for_skill = make_skill_segments(acts, truths) 
 
         # First pass: collect target skill segments' ends as positives,
         # and the target skill's "non-end" frames as part of negatives.

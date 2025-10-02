@@ -28,6 +28,9 @@ def get_bc_images_by_episode(dir_, files, skill, image_dir_name='pixel_obs'):
         images  = np.load(img_path)   # [T, H, W, 3] float32 in [0,1]
         actions = np.load(act_path)   # [T]
 
+        if len(lines) != len(actions):
+            lines = lines.append(lines[-1])
+
         if len(lines) != len(images) or len(images) != len(actions):
             raise ValueError(
                 f"Length mismatch in {file}: labels={len(lines)} images={len(images)} actions={len(actions)}"
@@ -151,7 +154,7 @@ def main():
     parser.add_argument("--skill", type=str, default="wood", help="Skill to train")
     parser.add_argument("--dir", type=str, default="Traces/stone_pickaxe_easy", help="Dataset root")
     parser.add_argument("--image_dir_name", type=str, default="pixel_obs", help="Subdir with per-episode .npy images")
-    parser.add_argument("--backbone", type=str, default="resnet18", choices=["resnet18", "resnet34"])
+    parser.add_argument("--backbone", type=str, default="resnet34", choices=["resnet18", "resnet34"])
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=150)
     parser.add_argument("--lr", type=float, default=3e-4)

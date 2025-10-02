@@ -23,10 +23,13 @@ from skill_helpers import *  # assumes build_startability_dataset, get_unique_sk
 SEED = 42
 rng = np.random.default_rng(SEED)
 
-dir_ = 'Traces/stone_pickaxe_easy'
+dir_ = 'Traces/stone_pick_static/stone_pick_static/stone_pick_static_pixels_big'
 models_dir = os.path.join(dir_, 'pu_start_models')
 os.makedirs(models_dir, exist_ok=True)
-files = os.listdir(os.path.join(dir_, 'groundTruth'))
+skills_dir = os.path.join(dir_, 'groundTruth')
+files = os.listdir(skills_dir)
+features_name = 'pca_features'
+old_data_mode = True
 
 # ----------------------------
 # PU builder
@@ -174,11 +177,11 @@ def fit_final_pu(X, y, *, params, seed=SEED):
 # Main training / evaluation loop
 # ----------------------------
 results = {}
-skills = get_unique_skills(dir_, files)
+skills = get_unique_skills(skills_dir, files)
 
 for skill in skills:
     # Load dataset
-    X, y, groups = build_startability_dataset(dir_, skill, files, features_dirname='pca_features_750')
+    X, y, groups = build_startability_dataset(dir_, skill, files, features_dirname=features_name, old_data_mode=old_data_mode)
 
     # Shuffle for reproducibility
     rng_np = np.random.RandomState(SEED)
