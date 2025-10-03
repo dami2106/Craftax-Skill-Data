@@ -75,7 +75,7 @@ def make_options_env(*, seed: int, render_mode=None, max_episode_steps=100):
             skill_list=args.skill_list,
             symbol_map=symbol_map,
             root=args.root,
-            hierarchy_dir=args.hierarchy_dir,
+            hierarchies_dir=args.hierarchy_dir,
             bc_checkpoint_dir=args.bc_checkpoint_dir,
             pca_model_path=args.pca_model_path,
             pu_start_models_dir=args.pu_start_models_dir,

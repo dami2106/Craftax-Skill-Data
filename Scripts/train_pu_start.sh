@@ -8,5 +8,5 @@ source ~/.bashrc
 conda activate SOTA
 
 
-python Skill_Learning/train_start_model_pulearning.py --dir 'Traces/stone_pick_static' --skills_dirname 'groundTruth'\
+python Skill_Learning/train_start_model_pulearning.py --dir 'Traces/stone_pick_static' --skills_dirname 'groundTruth' \
 --features_name 'pca_features_650' --old_data_mode --save_dir 'pu_start_models_groundtruth'
