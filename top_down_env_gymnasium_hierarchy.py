@@ -72,6 +72,10 @@ class OptionsOnTopEnv(gym.Env):
         self.skills = self.models["skills"]
         self.num_options = len(self.skills)
 
+        print("Number of options:", self.num_options)
+        print("Available skills:", self.skills)
+        print("symbol_map:", symbol_map)
+
         # ---- Action space mapping
         self.num_primitives = int(num_primitives)
         assert self.num_primitives > 0, "Need at least 1 primitive action"

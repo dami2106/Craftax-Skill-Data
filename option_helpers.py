@@ -684,6 +684,11 @@ def load_all_models_hierarchy(
     if hierarchies_dir and symbol_map:
         uniq = load_unique_hierarchies(hierarchies_dir)
         compile_productions_into_skill_bank(models, uniq, symbol_map)
+    else:
+        if hierarchies_dir and not os.path.isdir(hierarchies_dir):
+            print(f"[WARN] hierarchies_dir not found: {hierarchies_dir}")
+        if hierarchies_dir and not symbol_map:
+            print(f"[WARN] hierarchies_dir provided but no symbol_map; skipping composite productions.")
 
     return models
 
