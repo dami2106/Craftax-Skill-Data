@@ -1,5 +1,6 @@
 #PPO_Basic.py
 
+import argparse
 import numpy as np
 import gymnasium as gym
 from gymnasium.wrappers import TimeLimit
@@ -13,6 +14,12 @@ import imageio
 
 from option_helpers import FixedSeedAlways, to_gif_frame
 
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--ppo_seed", type=int, default=888)
+
+args, _ = parser.parse_known_args()
 
 def make_env(seed: int):
     def _thunk():
@@ -37,10 +44,12 @@ if __name__ == "__main__":
 
     # model = PPO.load("ppo_craftax_wood_ppo_actions")
 
+    print ("Training PPO on basic actions to get wood_pickaxe SEED : ", args.ppo_seed)
+
     model = PPO(
         policy="CnnPolicy",
         env=train_env,
-        seed=SEED,  # set SB3/torch RNGs too for full determinism
+        seed=args.ppo_seed,  # set SB3/torch RNGs too for full determinism
         verbose=1,
         tensorboard_log="./tb_logs_ppo_craftax",
         device="auto",

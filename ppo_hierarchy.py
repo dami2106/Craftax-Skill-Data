@@ -38,6 +38,9 @@ parser.add_argument("--pu_end_models_dir", type=str, default='pu_end_models')
 
 parser.add_argument("--run_name", type=str, default='test_ppo_hierarchy')
 
+parser.add_argument("--ppo_seed", type=int, default=888)
+
+
 args, _ = parser.parse_known_args()
 
 if args.symbol_map == "truth":
@@ -133,13 +136,15 @@ if __name__ == "__main__":
     train_env = VecTransposeImage(train_env) 
     train_env = VecMonitor(train_env)
 
+    print("Training PPO on options to get wood_pickaxe SEED : ", args.ppo_seed)
+
     model = MaskablePPO(
         "CnnPolicy",                   # pixels -> CNN
         train_env,
         verbose=1,
         tensorboard_log="./tb_logs_ppo_craftax",
         device="auto",
-        seed=TRAIN_SEED,
+        seed=args.ppo_seed,
     )
 
 
