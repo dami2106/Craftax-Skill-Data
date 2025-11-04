@@ -155,6 +155,9 @@ def main():
                     help="Optional path to .npy with dict {'mean':(3,), 'std':(3,)} when not using ImageNet")
     ap.add_argument("--compute_dataset_mean_std", action="store_true",
                     help="If not using ImageNet and no mean_std_npy, compute mean/std over the dataset")
+    ap.add_argument("--save_stats_path", type=str, default="",
+                help="Optional path to save {'mean','std','backbone','imagenet_norm'} as .npy. "
+                     "If --compute_dataset_mean_std is used and no path is given, defaults to DATA_DIR/dataset_mean_std.npy")
 
     args = ap.parse_args()
 
@@ -192,6 +195,28 @@ def main():
                     "Not using ImageNet normalization. Provide --mean_std_npy or --compute_dataset_mean_std."
                 )
         print(f"[settings] manual: backbone={backbone}, imagenet_norm={imagenet_norm}, mean={mean}, std={std}")
+
+        # Bundle the exact stats we will use
+    used_stats = {
+        "mean": np.array(mean, dtype=np.float32),
+        "std": np.array(std, dtype=np.float32),
+        "backbone": backbone,
+        "imagenet_norm": bool(imagenet_norm),
+    }
+
+    # Decide where to save stats (if requested or implicitly needed)
+    default_stats_path = (data_dir / "dataset_mean_std.npy")
+    should_autosave = (not args.ckpt_path) and (not args.mean_std_npy) and args.compute_dataset_mean_std
+
+    save_path = None
+    if args.save_stats_path:
+        save_path = Path(args.save_stats_path)
+    elif should_autosave:
+        save_path = default_stats_path
+
+    if save_path is not None:
+        np.save(save_path, used_stats)
+        print(f"[stats] Saved normalization/config to: {save_path}")
 
     # Device + dtype
     use_mps = torch.backends.mps.is_available()
