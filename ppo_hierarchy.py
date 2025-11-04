@@ -32,7 +32,7 @@ parser.add_argument("--symbol_map", type=str, default="truth")
 parser.add_argument("--root", type=str, default='Traces/stone_pickaxe_easy')
 parser.add_argument("--hierarchy_dir", type=str, default='Traces/stone_pickaxe_easy/hierarchy_data/Simple')
 parser.add_argument("--bc_checkpoint_dir", type=str, default='bc_checkpoints_resnet')
-parser.add_argument("--pca_model_path", type=str, default='pca_models/pca_model_750.joblib')
+parser.add_argument("--dataset_mean_std_path", type=str, default='dataset_mean_std.npy')
 parser.add_argument("--pu_start_models_dir", type=str, default='pu_start_models')
 parser.add_argument("--pu_end_models_dir", type=str, default='pu_end_models')
 
@@ -80,7 +80,7 @@ def make_options_env(*, seed: int, render_mode=None, max_episode_steps=100):
             root=args.root,
             hierarchies_dir=args.hierarchy_dir,
             bc_checkpoint_dir=args.bc_checkpoint_dir,
-            pca_model_path=args.pca_model_path,
+            dataset_mean_std_path=args.dataset_mean_std_path,
             pu_start_models_dir=args.pu_start_models_dir,
             pu_end_models_dir=args.pu_end_models_dir,
         )

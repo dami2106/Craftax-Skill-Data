@@ -28,7 +28,7 @@ class OptionsOnTopEnv(gym.Env):
         skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],            # list of skill names to load (None = all available)
         root: str = 'Traces/stone_pickaxe_easy',
         bc_checkpoint_dir: str = 'bc_checkpoints_resnet',
-        pca_model_path: str = 'pca_models/pca_model_750.joblib',
+        dataset_mean_std_path: str = 'dataset_mean_std.npy',
         pu_start_models_dir: str = 'pu_start_models',
         pu_end_models_dir: str = 'pu_end_models',
     ):
@@ -42,7 +42,7 @@ class OptionsOnTopEnv(gym.Env):
             skill_list = skill_list,
             root = root,
             bc_checkpoint_dir = bc_checkpoint_dir,
-            pca_model_path = pca_model_path,
+            dataset_mean_std_path = dataset_mean_std_path,
             pu_start_models_dir = pu_start_models_dir,
             pu_end_models_dir = pu_end_models_dir,
         

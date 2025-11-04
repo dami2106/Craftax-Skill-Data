@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import gymnasium as gym
 # Optional: only import torchvision if we actually need a ResNet
 _RESNET_IMPORTED = False
+_RESNET_FEATURE_IMPORTED = False
 
 
 class ImageNormalizer:
@@ -93,6 +94,68 @@ class ResNetPolicy(torch.nn.Module):
 
     def forward(self, x):
         return self.backbone(x)
+
+
+# ---------- ResNet Feature Extractor (for PU models) ----------
+class ResNetFeatureExtractor(torch.nn.Module):
+    """Return 512-dim features after global avgpool (before FC)."""
+    def __init__(self, backbone="resnet34", pretrained=True):
+        super().__init__()
+        global _RESNET_FEATURE_IMPORTED
+        if not _RESNET_FEATURE_IMPORTED:
+            from torchvision.models import resnet18, resnet34, ResNet18_Weights, ResNet34_Weights
+            ResNetFeatureExtractor._resnet18 = resnet18
+            ResNetFeatureExtractor._resnet34 = resnet34
+            ResNetFeatureExtractor._weights18 = ResNet18_Weights
+            ResNetFeatureExtractor._weights34 = ResNet34_Weights
+            _RESNET_FEATURE_IMPORTED = True
+
+        if backbone == "resnet18":
+            weights = ResNetFeatureExtractor._weights18.IMAGENET1K_V1 if pretrained else None
+            base = ResNetFeatureExtractor._resnet18(weights=weights)
+        elif backbone == "resnet34":
+            weights = ResNetFeatureExtractor._weights34.IMAGENET1K_V1 if pretrained else None
+            base = ResNetFeatureExtractor._resnet34(weights=weights)
+        else:
+            raise ValueError("backbone must be 'resnet18' or 'resnet34'")
+        self.stem = torch.nn.Sequential(*list(base.children())[:-1])  # conv..avgpool
+
+    def forward(self, x):
+        with torch.no_grad():
+            f = self.stem(x)           # [B, 512, 1, 1]
+            f = f.view(f.size(0), -1)  # [B, 512]
+        return f
+
+
+def _to_chw(img_hwc: np.ndarray) -> torch.Tensor:
+    """Convert HWC numpy array to CHW torch tensor."""
+    return torch.from_numpy(np.transpose(img_hwc, (2, 0, 1))).float()
+
+
+def _resize_chw(x_chw: torch.Tensor, target=256) -> torch.Tensor:
+    """Resize CHW tensor to target size."""
+    x = x_chw.unsqueeze(0)  # [1,C,H,W]
+    x = F.interpolate(x, size=(target, target), mode="bilinear", align_corners=False)
+    return x.squeeze(0)
+
+
+@torch.no_grad()
+def extract_resnet_features(frame_hw3, normalizer, model, device, target=256):
+    """
+    Extract ResNet features from a single frame.
+    frame_hw3: numpy array [H,W,3], float32 in [0,1] or uint8 in [0,255]
+    returns: numpy array [512] (float32)
+    """
+    assert frame_hw3.ndim == 3 and frame_hw3.shape[2] == 3, f"Expected [H,W,3], got {frame_hw3.shape}"
+    x_np = frame_hw3.astype(np.float32)
+    if x_np.max() > 1.0:  # uint8 input
+        x_np = x_np / 255.0
+    x = _to_chw(x_np)  # [3,H,W]
+    x = _resize_chw(x, target)  # [3,256,256]
+    x = normalizer(x).to(device)  # normalize
+    x = x.unsqueeze(0)  # [1,3,256,256]
+    feats = model(x)  # [1,512]
+    return feats.squeeze(0).cpu().numpy()  # [512]
 
 
 # ---------- Model builder that understands both checkpoint formats ----------
@@ -267,22 +330,39 @@ def predict_pu_end_state(model: dict, state) -> dict:
     }
 
 
-# ---------- PCA + model bank loaders ----------
+# ---------- ResNet feature extractor + model bank loaders ----------
 def load_all_models(skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],
                     root: str = 'Traces/stone_pickaxe_easy',
                     bc_checkpoint_dir: str = 'bc_checkpoints_resnet',
-                    pca_model_path: str = 'pca_models/pca_model_750.joblib',
+                    dataset_mean_std_path: str = 'dataset_mean_std.npy',
                     pu_start_models_dir: str = 'pu_start_models',
-                    pu_end_models_dir: str = 'pu_end_models'):
+                    pu_end_models_dir: str = 'pu_end_models',
+                    backbone: str = 'resnet34'):
     bc_models = {}
     for skill in skill_list:
         ckpt_path = os.path.join(root, bc_checkpoint_dir, f'{skill}_policy_resnet34_pt.pt')
         bc_models[skill] = load_policy(ckpt_path)
 
-    artifacts = joblib.load(os.path.join(root, pca_model_path))
-    scaler = artifacts['scaler']
-    pca = artifacts['pca']
-    n_features_expected = scaler.mean_.shape[0]
+    # Load normalization stats from dataset_mean_std.npy
+    stats_path = os.path.join(root, dataset_mean_std_path)
+    if not os.path.exists(stats_path):
+        raise FileNotFoundError(
+            f"Normalization stats not found at {stats_path}. "
+            f"Run get_resnet_features.py with --compute_dataset_mean_std to generate it."
+        )
+    stats = np.load(stats_path, allow_pickle=True).item()
+    mean = tuple([float(x) for x in stats["mean"]])
+    std = tuple([float(x) for x in stats["std"]])
+    backbone_from_stats = stats.get("backbone", backbone)
+    if backbone_from_stats != backbone:
+        print(f"[WARN] Stats file specifies backbone={backbone_from_stats}, but requested {backbone}. Using {backbone_from_stats}.")
+        backbone = backbone_from_stats
+
+    # Create ResNet feature extractor
+    device = torch.device('cuda' if torch.cuda.is_available() else
+                         ('mps' if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available() else 'cpu'))
+    resnet_extractor = ResNetFeatureExtractor(backbone=backbone, pretrained=True).to(device).eval()
+    normalizer = ImageNormalizer(mean, std)
 
     pu_start_models = load_pu_start_models(os.path.join(root, pu_start_models_dir))
 
@@ -298,19 +378,28 @@ def load_all_models(skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickax
         "bc_models": bc_models,
         "termination_models": pu_end_models,
         "start_models": pu_start_models,
-        "pca_model": {'scaler': scaler, 'pca': pca, 'n_features_expected': n_features_expected}
+        "resnet_extractor": resnet_extractor,
+        "resnet_normalizer": normalizer,
+        "resnet_device": device,
+        "resnet_backbone": backbone
     }
 
 
 def available_skills(models, state):
-    # state: uint8 or float32 flat vector -> PCA space
-    state = np.asarray(state).astype(np.float32)
-    if state.max() > 1.0:  # allow uint8 input
-        state = state / 255.0
-
-    X = state.reshape(1, -1)
-    Xc = models["pca_model"]['scaler'].transform(X)
-    Xf = models["pca_model"]['pca'].transform(Xc)
+    # state: HxWx3 image (uint8 or float32) -> ResNet features
+    state = np.asarray(state)
+    assert state.ndim == 3 and state.shape[2] == 3, f"Expected [H,W,3] image, got {state.shape}"
+    
+    # Extract ResNet features
+    features = extract_resnet_features(
+        state,
+        models["resnet_normalizer"],
+        models["resnet_extractor"],
+        models["resnet_device"]
+    )
+    
+    # Reshape to [1, 512] for PU models
+    Xf = features.reshape(1, -1)
 
     rows = applicable_pu_start_models(models["start_models"], Xf, return_details=True, eps=0.0)
     applicable = {r["skill"] for r in rows if r["applicable"]}
@@ -443,10 +532,21 @@ def should_terminate(models, state, skill, call_id: Optional[int] = None):
 
 
 def _primitive_should_terminate(models, state, skill) -> bool:
-    state = np.asarray(state).astype(np.float32) / 255.0
-    X = state.reshape(1, -1)
-    X_centered = models["pca_model"]['scaler'].transform(X)
-    X_feats = models["pca_model"]['pca'].transform(X_centered)
+    # state: HxWx3 image (uint8 or float32) -> ResNet features
+    state = np.asarray(state)
+    assert state.ndim == 3 and state.shape[2] == 3, f"Expected [H,W,3] image, got {state.shape}"
+    
+    # Extract ResNet features
+    features = extract_resnet_features(
+        state,
+        models["resnet_normalizer"],
+        models["resnet_extractor"],
+        models["resnet_device"]
+    )
+    
+    # Reshape to [1, 512] for PU models
+    X_feats = features.reshape(1, -1)
+    
     tm = models["termination_models"].get(skill)
     if tm is None:
         # No end model: never terminate based on classifier
@@ -631,7 +731,7 @@ def load_all_models_hierarchy(
     root:           str = 'Traces/stone_pickaxe_easy',
     backbone_hint:  str = 'resnet34',
     bc_checkpoint_dir: str = 'bc_checkpoints_resnet',
-    pca_model_path: str = 'pca_models/pca_model_750.joblib',
+    dataset_mean_std_path: str = 'dataset_mean_std.npy',
     pu_start_models_dir: str = 'pu_start_models',
     pu_end_models_dir: str = 'pu_end_models',
 ):
@@ -657,10 +757,26 @@ def load_all_models_hierarchy(
         ckpt_path = _find_ckpt(skill)
         bc_models[skill] = load_policy(ckpt_path)
 
-    artifacts = joblib.load(os.path.join(root, pca_model_path))
-    scaler = artifacts['scaler']
-    pca = artifacts['pca']
-    n_features_expected = scaler.mean_.shape[0]
+    # Load normalization stats from dataset_mean_std.npy
+    stats_path = os.path.join(root, dataset_mean_std_path)
+    if not os.path.exists(stats_path):
+        raise FileNotFoundError(
+            f"Normalization stats not found at {stats_path}. "
+            f"Run get_resnet_features.py with --compute_dataset_mean_std to generate it."
+        )
+    stats = np.load(stats_path, allow_pickle=True).item()
+    mean = tuple([float(x) for x in stats["mean"]])
+    std = tuple([float(x) for x in stats["std"]])
+    backbone_from_stats = stats.get("backbone", backbone_hint)
+    if backbone_from_stats != backbone_hint:
+        print(f"[WARN] Stats file specifies backbone={backbone_from_stats}, but requested {backbone_hint}. Using {backbone_from_stats}.")
+        backbone_hint = backbone_from_stats
+
+    # Create ResNet feature extractor
+    device = torch.device('cuda' if torch.cuda.is_available() else
+                         ('mps' if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available() else 'cpu'))
+    resnet_extractor = ResNetFeatureExtractor(backbone=backbone_hint, pretrained=True).to(device).eval()
+    normalizer = ImageNormalizer(mean, std)
 
     pu_start_models = load_pu_start_models(os.path.join(root, pu_start_models_dir))
 
@@ -676,7 +792,10 @@ def load_all_models_hierarchy(
         "bc_models": bc_models,                 # {skill: (model,..) or ("__COMPOSITE__", seq)}
         "termination_models": pu_end_models,    # end detectors (primitive; composites get alias of last leaf)
         "start_models": pu_start_models,        # start detectors
-        "pca_model": {'scaler': scaler, 'pca': pca, 'n_features_expected': n_features_expected},
+        "resnet_extractor": resnet_extractor,
+        "resnet_normalizer": normalizer,
+        "resnet_device": device,
+        "resnet_backbone": backbone_hint,
         "composite_runtime": {},                # instance state
         "call_id_ctr": 0,                       # instance id counter
     }
