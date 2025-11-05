@@ -15,7 +15,7 @@ from pulearn import ElkanotoPuClassifier, BaggingPuClassifier
 from joblib import dump
 import pandas as pd
 import argparse
-
+from sklearn.preprocessing import Normalizer
 from skill_helpers import *  # assumes build_startability_dataset, get_unique_skills etc.
 
 # ----------------------------
@@ -62,9 +62,10 @@ def make_pu_clf(
     Base classifier: SVC(probability=True). Standardized inputs.
     """
     base = make_pipeline(
-        StandardScaler(),
-        SVC(C=C, kernel=kernel, gamma=gamma, probability=True, random_state=seed)
-    )
+    Normalizer(norm="l2"),          # <— KEY for ResNet embeddings
+    StandardScaler(with_mean=False),# with_mean=False keeps sparse safety; ok for dense too
+    SVC(C=C, kernel=kernel, gamma=gamma, probability=True, random_state=seed)
+)
 
     if method.lower() == "bagging":
         # Bagging over subsamples of unlabeled examples
@@ -122,9 +123,9 @@ def cv_score_for_params(X, y, groups, *, method, C, kernel, gamma,
 
 # Search space includes linear kernel (Req #5)
 METHODS = ["elkanoto"]
-Cs      = [10]
-KERNELS = ["rbf"]
-GAMMAS  = ["scale"]   # only used for rbf (safe to pass for linear)
+Cs      = [0.1, 1, 3, 10]
+KERNELS = ["linear", "rbf"]
+GAMMAS  = ["scale", 1e-3, 1e-4]   # only used for rbf (safe to pass for linear)
 BAG_N   = [10, 25]     # for bagging
 HOLDOUT = [0.2]        # for elkanoto
 
