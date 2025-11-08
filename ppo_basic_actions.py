@@ -18,6 +18,7 @@ from option_helpers import FixedSeedAlways, to_gif_frame
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--ppo_seed", type=int, default=888)
+parser.add_argument("--run_name", type=str, default="ppo_craftax_wood_pick_actions")
 
 args, _ = parser.parse_known_args()
 
@@ -59,7 +60,7 @@ if __name__ == "__main__":
     model.learn(
         total_timesteps=100_000,
         log_interval=1,
-        tb_log_name="ppo_wood_pick_actions",
+        tb_log_name=f"{args.run_name}",
         progress_bar=True,
     )
     
