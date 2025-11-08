@@ -249,6 +249,9 @@ def bc_policy(models, state, skill):
 # ---------- PU start / end utilities ----------
 def load_pu_start_models(models_dir: str):
     models = []
+    if not os.path.isdir(models_dir):
+        print(f"[WARN] PU start models directory not found: {models_dir}. All skills will be always available.")
+        return models
     for fname in os.listdir(models_dir):
         if not fname.endswith("_meta.json"):
             continue
@@ -265,6 +268,8 @@ def load_pu_start_models(models_dir: str):
             models.append({"skill": skill, "clf": clf, "thr": thr, "meta": meta})
         except Exception as e:
             print(f"[WARN] Skipping {skill}: {e}")
+    if len(models) == 0:
+        print(f"[WARN] No PU start models found in {models_dir}. All skills will be always available.")
     return models
 
 def applicable_pu_start_models(models, state, *, return_details=False, eps=0.0):
@@ -364,14 +369,22 @@ def load_all_models(skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickax
     resnet_extractor = ResNetFeatureExtractor(backbone=backbone, pretrained=True).to(device).eval()
     normalizer = ImageNormalizer(mean, std)
 
-    pu_start_models = load_pu_start_models(os.path.join(root, pu_start_models_dir))
+    pu_start_models_dir_path = os.path.join(root, pu_start_models_dir)
+    pu_start_models = load_pu_start_models(pu_start_models_dir_path)
 
+    pu_end_models_dir_path = os.path.join(root, pu_end_models_dir)
     pu_end_models = {}
-    for skill in skill_list:
-        try:
-            pu_end_models[skill] = load_pu_end_model(os.path.join(root, pu_end_models_dir), skill)
-        except FileNotFoundError:
-            print(f"[WARN] No PU end model for skill '{skill}'")
+    if not os.path.isdir(pu_end_models_dir_path):
+        print(f"[WARN] PU end models directory not found: {pu_end_models_dir_path}. Skills will only terminate on max_skill_len or episode end.")
+    else:
+        for skill in skill_list:
+            try:
+                pu_end_models[skill] = load_pu_end_model(pu_end_models_dir_path, skill)
+            except FileNotFoundError:
+                print(f"[WARN] No PU end model for skill '{skill}'")
+    
+    if len(pu_end_models) == 0:
+        print(f"[WARN] No PU end models loaded. Skills will only terminate on max_skill_len or episode end.")
 
     return {
         "skills": skill_list,  # canonical order
@@ -389,6 +402,11 @@ def available_skills(models, state):
     # state: HxWx3 image (uint8 or float32) -> ResNet features
     state = np.asarray(state)
     assert state.ndim == 3 and state.shape[2] == 3, f"Expected [H,W,3] image, got {state.shape}"
+    
+    # If no start models, all skills are always available
+    if not models.get("start_models") or len(models["start_models"]) == 0:
+        order = models["skills"]
+        return np.ones(len(order), dtype=bool)
     
     # Extract ResNet features
     features = extract_resnet_features(
@@ -532,9 +550,18 @@ def should_terminate(models, state, skill, call_id: Optional[int] = None):
 
 
 def _primitive_should_terminate(models, state, skill) -> bool:
+    # If no termination models exist, never terminate based on PU models
+    if not models.get("termination_models") or len(models["termination_models"]) == 0:
+        return False
+    
     # state: HxWx3 image (uint8 or float32) -> ResNet features
     state = np.asarray(state)
     assert state.ndim == 3 and state.shape[2] == 3, f"Expected [H,W,3] image, got {state.shape}"
+    
+    tm = models["termination_models"].get(skill)
+    if tm is None:
+        # No end model for this skill: never terminate based on classifier
+        return False
     
     # Extract ResNet features
     features = extract_resnet_features(
@@ -547,10 +574,6 @@ def _primitive_should_terminate(models, state, skill) -> bool:
     # Reshape to [1, 512] for PU models
     X_feats = features.reshape(1, -1)
     
-    tm = models["termination_models"].get(skill)
-    if tm is None:
-        # No end model: never terminate based on classifier
-        return False
     return predict_pu_end_state(tm, X_feats)["is_end"]
 
 
@@ -661,8 +684,8 @@ def compile_productions_into_skill_bank(
                        composite termination is phase-aware in should_terminate)
       - bc model    := sentinel ('__COMPOSITE__', [child_skill_names...])
     """
-    start_by_skill = {m["skill"]: m for m in models["start_models"]}
-    end_by_skill   = models["termination_models"]
+    start_by_skill = {m["skill"]: m for m in models["start_models"]} if models.get("start_models") else {}
+    end_by_skill   = models.get("termination_models", {}) or {}
     skills_set     = set(models["skills"])
 
     if "composite_runtime" not in models:
@@ -687,6 +710,14 @@ def compile_productions_into_skill_bank(
 
             first_leaf, last_leaf = seq[0], seq[-1]
 
+            # If no PU models, skip composite creation (can't gate availability/termination)
+            if not start_by_skill:
+                print(f"[WARN] No start PU models available. Skipping composite Production_{pid}.")
+                continue
+            if not end_by_skill:
+                print(f"[WARN] No end PU models available. Skipping composite Production_{pid}.")
+                continue
+            
             if first_leaf not in start_by_skill:
                 print(f"[WARN] No start PU for '{first_leaf}' (needed by Production_{pid}); skipping.")
                 continue
@@ -778,14 +809,22 @@ def load_all_models_hierarchy(
     resnet_extractor = ResNetFeatureExtractor(backbone=backbone_hint, pretrained=True).to(device).eval()
     normalizer = ImageNormalizer(mean, std)
 
-    pu_start_models = load_pu_start_models(os.path.join(root, pu_start_models_dir))
+    pu_start_models_dir_path = os.path.join(root, pu_start_models_dir)
+    pu_start_models = load_pu_start_models(pu_start_models_dir_path)
 
+    pu_end_models_dir_path = os.path.join(root, pu_end_models_dir)
     pu_end_models = {}
-    for skill in skill_list:
-        try:
-            pu_end_models[skill] = load_pu_end_model(os.path.join(root, pu_end_models_dir), skill)
-        except FileNotFoundError:
-            print(f"[WARN] No PU end model for skill '{skill}'")
+    if not os.path.isdir(pu_end_models_dir_path):
+        print(f"[WARN] PU end models directory not found: {pu_end_models_dir_path}. Skills will only terminate on max_skill_len or episode end.")
+    else:
+        for skill in skill_list:
+            try:
+                pu_end_models[skill] = load_pu_end_model(pu_end_models_dir_path, skill)
+            except FileNotFoundError:
+                print(f"[WARN] No PU end model for skill '{skill}'")
+    
+    if len(pu_end_models) == 0:
+        print(f"[WARN] No PU end models loaded. Skills will only terminate on max_skill_len or episode end.")
 
     models = {
         "skills": list(skill_list),

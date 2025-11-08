@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=ppo_craftax_options_gt      # Job name
 #SBATCH --partition=bigbatch                     # Replace with your cluster's GPU partition name
-#SBATCH --output=/home-mscluster/dharvey/HiSD/experiments_diss/ppo_options_groundtruth_test_resnet.out  # Standard output and error log
+#SBATCH --output=/home-mscluster/dharvey/HiSD/experiments_diss/ppo_options_groundtruth_test_resnet_no_pu.out  # Standard output and error log
 # Load your environment
 
 source ~/.bashrc
@@ -19,9 +19,10 @@ for seed in "${seeds[@]}"; do
     echo "Starting PPO training with seed: $seed"
     echo "=========================================="
 
+#     python ppo_skills.py --skill_list wooden_pickaxe stone_pickaxe wood stone table --root Traces/stone_pick_static --bc_checkpoint_dir bc_checkpoints_gt\
+#    --pu_start_models_dir pu_start_resnet_gt --pu_end_models_dir pu_end_resnet_gt --run_name ppo_options_groundtruth_$seed --ppo_seed "$seed"
     python ppo_skills.py --skill_list wooden_pickaxe stone_pickaxe wood stone table --root Traces/stone_pick_static --bc_checkpoint_dir bc_checkpoints_gt\
-   --pu_start_models_dir pu_start_resnet_gt --pu_end_models_dir pu_end_resnet_gt --run_name ppo_options_groundtruth_$seed --ppo_seed "$seed"
-
+   --pu_start_models_dir BLANK --pu_end_models_dir BLANK --run_name ppo_options_groundtruth_no_pu_$seed --ppo_seed "$seed"
 
     echo "Finished run for seed: $seed"
     echo

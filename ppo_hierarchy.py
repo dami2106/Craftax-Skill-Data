@@ -9,7 +9,7 @@ from sb3_contrib.common.wrappers import ActionMasker  # <-- ensures masks used i
 
 from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage, VecMonitor
 
-from top_down_env_gymnasium_hierarchy import CraftaxTopDownEnv
+from top_down_env_gymnasium import CraftaxTopDownEnv
 from top_down_env_gymnasium_hierarchy import OptionsOnTopEnv
 
 import imageio
