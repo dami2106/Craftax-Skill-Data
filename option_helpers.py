@@ -684,7 +684,8 @@ def compile_productions_into_skill_bank(
                        composite termination is phase-aware in should_terminate)
       - bc model    := sentinel ('__COMPOSITE__', [child_skill_names...])
     """
-    start_by_skill = {m["skill"]: m for m in models["start_models"]} if models.get("start_models") else {}
+    start_models_list = models.get("start_models") or []
+    start_by_skill = {m["skill"]: m for m in start_models_list}
     end_by_skill   = models.get("termination_models", {}) or {}
     skills_set     = set(models["skills"])
 
@@ -694,6 +695,8 @@ def compile_productions_into_skill_bank(
         models["call_id_ctr"] = 0
 
     composite_names = []
+    have_start_models = len(start_by_skill) > 0
+    have_end_models = len(end_by_skill) > 0
 
     for tree in hierarchies:
         for pnode in _iter_production_nodes(tree):
@@ -710,18 +713,12 @@ def compile_productions_into_skill_bank(
 
             first_leaf, last_leaf = seq[0], seq[-1]
 
-            # If no PU models, skip composite creation (can't gate availability/termination)
-            if not start_by_skill:
-                print(f"[WARN] No start PU models available. Skipping composite Production_{pid}.")
-                continue
-            if not end_by_skill:
-                print(f"[WARN] No end PU models available. Skipping composite Production_{pid}.")
-                continue
-            
-            if first_leaf not in start_by_skill:
+            missing_start = have_start_models and first_leaf not in start_by_skill
+            missing_end = have_end_models and last_leaf not in end_by_skill
+            if missing_start:
                 print(f"[WARN] No start PU for '{first_leaf}' (needed by Production_{pid}); skipping.")
                 continue
-            if last_leaf not in end_by_skill:
+            if missing_end:
                 print(f"[WARN] No end PU for '{last_leaf}' (needed by Production_{pid}); skipping.")
                 continue
 
@@ -734,16 +731,20 @@ def compile_productions_into_skill_bank(
             models["bc_models"][name] = ("__COMPOSITE__", seq)
 
             # 2) Keep alias of last leaf's end model (used for availability gating & legacy)
-            models["termination_models"][name] = end_by_skill[last_leaf]
+            if have_end_models:
+                models["termination_models"][name] = end_by_skill[last_leaf]
 
             # 3) Start: alias of first leaf's start PU (for availability)
-            first_leaf_start = start_by_skill[first_leaf]
-            models["start_models"].append({
-                "skill": name,
-                "clf": first_leaf_start["clf"],
-                "thr": first_leaf_start["thr"],
-                "meta": dict(first_leaf_start.get("meta", {})),
-            })
+            if have_start_models:
+                first_leaf_start = start_by_skill[first_leaf]
+                start_models_list.append({
+                    "skill": name,
+                    "clf": first_leaf_start["clf"],
+                    "thr": first_leaf_start["thr"],
+                    "meta": dict(first_leaf_start.get("meta", {})),
+                })
+                # Keep lookup in sync
+                start_by_skill[name] = start_models_list[-1]
 
             # 4) Expose in skills list
             if name not in skills_set:

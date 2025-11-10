@@ -75,6 +75,7 @@ class OptionsOnTopEnv(gym.Env):
         print("Number of options:", self.num_options)
         print("Available skills:", self.skills)
         print("symbol_map:", symbol_map)
+        print("Available skills (full):", self.models["skills"])
 
         # ---- Action space mapping
         self.num_primitives = int(num_primitives)

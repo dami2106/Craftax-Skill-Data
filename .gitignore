@@ -181,3 +181,6 @@ ppo_craftax_wood_ppo_actions.zip
 ppo_craftax_wood_ppo_options.zip
 
 tb_logs_ppo_craftax_pca_pu/
+tb_logs_ppo_craftax_new/
+
+tb_logs_ppo_craftax_new_broken_hierarchy/
