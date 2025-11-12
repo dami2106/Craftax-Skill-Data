@@ -10,11 +10,12 @@ class OptionsOnTopEnv(gym.Env):
     """
     Wraps CraftaxTopDownEnv to expose a Discrete action space:
       [0..P-1]      -> primitive actions (single step)
-      [P..P+K-1]    -> options (macro policy via BC, ONE primitive step per env.step)
-    
-    MaskablePPO calls `action_masks()` to know which actions are valid.
-    - When NO option is active: primitives are always valid; options valid iff available_skills(...)
-    - When an option IS active: ONLY that option is valid (commit semantics); primitives are masked out.
+      [P..P+K-1]    -> options (macro policies via BC executed with call-and-return)
+
+    SMDP semantics:
+      - Agent acts at decision times; selecting an option triggers an internal rollout
+        of primitives for up to a skill budget while accumulating reward.
+      - Masks only gate the selection step. Primitives and options are always exposed.
     """
     metadata = {"render_modes": ["rgb_array", "human"], "render_fps": 0}
 
@@ -64,8 +65,8 @@ class OptionsOnTopEnv(gym.Env):
         self.observation_space = self.env.observation_space
 
         # Book-keeping
-        self.elapsed_macro_steps = 0
         self.current_obs = None
+        self.total_primitive_steps = 0
 
         # Seed same as base
         self._seed = getattr(self.env, "_seed", 0)
@@ -74,9 +75,8 @@ class OptionsOnTopEnv(gym.Env):
 
         self.debug_record_frames = None
 
-        # Option-commit state
-        self.active_option_idx = None     # index in [0..K-1] relative to self.skills, or None
-        self.option_steps_left = 0        # counts down from max_skill_len while option is active
+    def _skill_budget(self, skill_name: str) -> int:
+        return self.max_skill_len
 
     # ---------- utilities ----------
     @staticmethod
@@ -98,44 +98,14 @@ class OptionsOnTopEnv(gym.Env):
         if K == 0:
             return np.ones(P, dtype=bool)
 
-        # If not yet reset, only allow primitives
-        if self.current_obs is None:
-            prim_mask = np.ones(P, dtype=bool)
-            opt_mask = np.zeros(K, dtype=bool)
-            return np.concatenate([prim_mask, opt_mask])
-
-        # If an option is committed, expose ONLY that option; primitives OFF
-        if self.active_option_idx is not None:
-            prim_mask = np.zeros(P, dtype=bool)
-            opt_mask = np.zeros(K, dtype=bool)
-            opt_mask[self.active_option_idx] = True
-            return np.concatenate([prim_mask, opt_mask])
-
-        # No active option -> primitives ON, all options available (PU gating removed)
-        prim_mask = np.ones(P, dtype=bool)
-        opt_mask = np.ones(K, dtype=bool)
-        return np.concatenate([prim_mask, opt_mask])
+        return np.ones(P + K, dtype=bool)
 
     # ---------- Gymnasium API ----------
     def reset(self, *, seed=None, options=None):
         obs, info = self.env.reset(seed=seed, options=options)
-        self.elapsed_macro_steps = 0
         self.current_obs = obs
-        # Clear any active option at episode start
-        self.active_option_idx = None
-        self.option_steps_left = 0
+        self.total_primitive_steps = 0
         return obs, info
-
-    def _bc_one_step_for_active(self, frame_uint8):
-        """Compute exactly ONE primitive action from BC for the active option."""
-        assert self.active_option_idx is not None
-        skill_name = self.skills[self.active_option_idx]
-        prim_action = int(bc_policy(self.models, frame_uint8, skill_name))
-        if prim_action < 0 or prim_action >= self.num_primitives:
-            raise error.InvalidAction(
-                f"bc_policy returned invalid primitive {prim_action} (P={self.num_primitives})"
-            )
-        return prim_action
 
     def step(self, a):
         # Normalize action scalar
@@ -148,49 +118,77 @@ class OptionsOnTopEnv(gym.Env):
 
         P, K = self.num_primitives, self.num_options
 
-        # Decide which primitive to execute THIS step
-        if self.active_option_idx is None:
-            # No active option yet
-            if a < P:
-                # Agent chose a primitive -> execute and remain with no active option
-                prim_action = a
-            else:
-                # Agent chose an option -> commit to it and run ONE BC step
-                picked_skill_id = a - P
-                if picked_skill_id < 0 or picked_skill_id >= K:
-                    raise error.InvalidAction(f"Invalid option id {picked_skill_id}")
-                self.active_option_idx = picked_skill_id
-                self.option_steps_left = self.max_skill_len  # start budget
-                frame = self._as_uint8_frame(self.current_obs)
-                prim_action = self._bc_one_step_for_active(frame)
-        else:
-            # Option is active -> ignore the agent's 'a' (mask should force the same option anyway)
-            frame = self._as_uint8_frame(self.current_obs)
-            prim_action = self._bc_one_step_for_active(frame)
+        if a < P:
+            return self._run_primitive(a)
 
-        # ---- exactly one primitive env step ----
+        option_idx = a - P
+        if option_idx < 0 or option_idx >= K:
+            raise error.InvalidAction(f"Invalid option id {option_idx}")
+
+        return self._run_option(option_idx)
+
+    def _run_primitive(self, prim_action: int):
         obs, r, terminated, truncated, info = self.env.step(prim_action)
         self.current_obs = obs
-        self.elapsed_macro_steps += 1
-
-        # Option termination logic (episode end OR budget exhausted)
-        if self.active_option_idx is not None:
-            # Decrement budget after executing the step
-            self.option_steps_left -= 1
-
-            should_stop = False
-            if terminated or truncated:
-                should_stop = True
-            else:
-                if self.option_steps_left <= 0:
-                    # Reached max_skill_len budget
-                    should_stop = True
-
-            if should_stop:
-                self.active_option_idx = None
-                self.option_steps_left = 0
-
+        self.total_primitive_steps += 1
+        info = dict(info) if info is not None else {}
+        info["primitive_steps"] = self.total_primitive_steps
         return obs, float(r), bool(terminated), bool(truncated), info
+
+    def _run_option(self, option_idx: int):
+        if self.current_obs is None:
+            raise RuntimeError("Environment must be reset before executing options.")
+
+        skill_name = self.skills[option_idx]
+        budget = self._skill_budget(skill_name)
+        total_reward = 0.0
+        terminated = False
+        truncated = False
+        last_info = {}
+        steps = 0
+        obs = self.current_obs
+
+        while steps < budget:
+            frame = self._as_uint8_frame(obs)
+            prim_action = self._bc_one_step_for_skill(skill_name, frame)
+            obs, r, terminated, truncated, last_info = self.env.step(prim_action)
+
+            total_reward += float(r)
+            self.total_primitive_steps += 1
+            steps += 1
+            self.current_obs = obs
+
+            if terminated or truncated:
+                break
+
+        if last_info is None:
+            last_info = {}
+        info = dict(last_info)
+        option_info = info.setdefault("option", {})
+        option_info.update(
+            {
+                "skill": skill_name,
+                "steps": steps,
+                "reward": total_reward,
+                "budget": budget,
+                "terminated": bool(terminated),
+                "truncated": bool(truncated),
+            }
+        )
+        if steps >= budget and not (terminated or truncated):
+            option_info["budget_exhausted"] = True
+
+        info["primitive_steps"] = self.total_primitive_steps
+
+        return obs, total_reward, bool(terminated), bool(truncated), info
+
+    def _bc_one_step_for_skill(self, skill_name: str, frame_uint8):
+        prim_action = int(bc_policy(self.models, frame_uint8, skill_name))
+        if prim_action < 0 or prim_action >= self.num_primitives:
+            raise error.InvalidAction(
+                f"bc_policy returned invalid primitive {prim_action} (P={self.num_primitives})"
+            )
+        return prim_action
 
     # Optional passthroughs
     def render(self):
