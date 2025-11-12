@@ -6,11 +6,9 @@ from top_down_env_gymnasium import CraftaxTopDownEnv
 
 # IMPORTANT: import the updated helpers
 from option_helpers import (
-    available_skills,
     bc_policy_hierarchy,
     load_all_models_hierarchy,
     new_call_id,
-    should_terminate,          # phase/instance-aware
 )
 
 class OptionsOnTopEnv(gym.Env):
@@ -20,9 +18,9 @@ class OptionsOnTopEnv(gym.Env):
       [P..P+K-1]    -> options (macro policy via BC, but we execute EXACTLY ONE primitive per env.step)
 
     Commitment semantics:
-      - When NO option is active: primitives are valid; options valid iff available_skills(...)
+      - When NO option is active: primitives are valid; all options available
       - When an option IS active: ONLY that option is valid (primitives & other options masked out)
-      - Option ends if: episode ends, should_terminate(...), or step budget hits 0
+      - Option ends if: episode ends or step budget hits 0
     """
     metadata = {"render_modes": ["rgb_array", "human"], "render_fps": 0}
 
@@ -140,15 +138,9 @@ class OptionsOnTopEnv(gym.Env):
             opt_mask[self.active_option_idx] = True
             return np.concatenate([prim_mask, opt_mask], axis=0)
 
-        # No active option: primitives ON, options according to availability
+        # No active option: primitives ON, all options available
         prim_mask = np.ones(P, dtype=bool)
-        frame = self._as_uint8_frame(self.current_obs)
-        full_mask = available_skills(self.models, frame)  # aligned to models["skills"]
-
-        # Map any internal order to self.skills order (if different)
-        skills_order = self.models["skills"]
-        idx_map = {s: i for i, s in enumerate(skills_order)}
-        opt_mask = np.array([full_mask[idx_map[s]] for s in self.skills], dtype=bool)
+        opt_mask = np.ones(K, dtype=bool)
         return np.concatenate([prim_mask, opt_mask], axis=0)
 
     # ---------- Gymnasium API ----------
@@ -236,10 +228,7 @@ class OptionsOnTopEnv(gym.Env):
             if terminated or truncated:
                 stop = True
             else:
-                skill_name = self.skills[self.active_option_idx]
-                if should_terminate(self.models, self._as_uint8_frame(obs), skill_name, self.active_call_id):
-                    stop = True
-                elif self.option_steps_left <= 0:
+                if self.option_steps_left <= 0:
                     stop = True
 
             if stop:

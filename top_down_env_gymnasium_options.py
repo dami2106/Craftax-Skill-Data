@@ -111,15 +111,9 @@ class OptionsOnTopEnv(gym.Env):
             opt_mask[self.active_option_idx] = True
             return np.concatenate([prim_mask, opt_mask])
 
-        # No active option -> primitives ON, options according to availability
+        # No active option -> primitives ON, all options available (PU gating removed)
         prim_mask = np.ones(P, dtype=bool)
-        frame = self._as_uint8_frame(self.current_obs)
-        full_mask = available_skills(self.models, frame)  # aligned to models["skills"]
-
-        # Map to the subset order in self.skills (if it's a subset / reordered)
-        skills_order = self.models["skills"]
-        idx_map = {s: i for i, s in enumerate(skills_order)}
-        opt_mask = np.array([full_mask[idx_map[s]] for s in self.skills], dtype=bool)
+        opt_mask = np.ones(K, dtype=bool)
         return np.concatenate([prim_mask, opt_mask])
 
     # ---------- Gymnasium API ----------
@@ -179,7 +173,7 @@ class OptionsOnTopEnv(gym.Env):
         self.current_obs = obs
         self.elapsed_macro_steps += 1
 
-        # Option termination logic (episode end OR end-model OR budget exhausted)
+        # Option termination logic (episode end OR budget exhausted)
         if self.active_option_idx is not None:
             # Decrement budget after executing the step
             self.option_steps_left -= 1
@@ -188,10 +182,7 @@ class OptionsOnTopEnv(gym.Env):
             if terminated or truncated:
                 should_stop = True
             else:
-                skill_name = self.skills[self.active_option_idx]
-                if should_terminate(self.models, self._as_uint8_frame(obs), skill_name):
-                    should_stop = True
-                elif self.option_steps_left <= 0:
+                if self.option_steps_left <= 0:
                     # Reached max_skill_len budget
                     should_stop = True
 

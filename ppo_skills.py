@@ -31,8 +31,6 @@ parser.add_argument("--skill_list", nargs="+", default=['wood_pick'])
 parser.add_argument("--root", type=str, default='Traces/stone_pickaxe_easy')
 parser.add_argument("--bc_checkpoint_dir", type=str, default='bc_checkpoints_resnet')
 parser.add_argument("--dataset_mean_std_path", type=str, default='dataset_mean_std.npy')
-parser.add_argument("--pu_start_models_dir", type=str, default='pu_start_models')
-parser.add_argument("--pu_end_models_dir", type=str, default='pu_end_models')
 
 parser.add_argument("--run_name", type=str, default='test_ppo_options')
 parser.add_argument("--ppo_seed", type=int, default=888)
@@ -60,8 +58,6 @@ def make_options_env(*, seed: int, render_mode=None,  max_episode_steps=100):
             root=args.root,
             bc_checkpoint_dir=args.bc_checkpoint_dir,
             dataset_mean_std_path=args.dataset_mean_std_path,
-            pu_start_models_dir=args.pu_start_models_dir,
-            pu_end_models_dir=args.pu_end_models_dir,
         )
 
         # 1) ActionMasker wraps the env that has `action_masks`
@@ -138,22 +134,3 @@ if __name__ == "__main__":
     )
     model.save(args.run_name)
 
-
-    # obs = eval_env_vec.reset()
-    # # Convert the initial observation to a GIF-safe frame (HWC uint8) to match subsequent frames
-    # frames = [to_gif_frame(obs)]
-
-    # done = False
-    # steps = 0
-    # while not done and steps < 100:
-    #     masks = get_action_masks(eval_env_vec)
-    #     action, _ = model.predict(obs, action_masks=masks, deterministic=True)
-    #     obs, reward, terminated, info = eval_env_vec.step(action)
-    #     frames.append(to_gif_frame(obs))
-    #     done = bool(terminated[0])
-
-    #     print("Step:", steps, "Action:", action, "Reward:", reward, "Done:", done)
-
-    #     steps += 1
-
-    # imageio.mimsave("craftax_ppo_wood_pick_options_eval.gif", frames, fps=1)

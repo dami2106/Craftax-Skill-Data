@@ -2,15 +2,11 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import os
-import joblib
 import json
-from joblib import load as joblib_load
 import glob
 from typing import Any, Dict, List, Optional, Tuple
 import gymnasium as gym
 # Optional: only import torchvision if we actually need a ResNet
-_RESNET_IMPORTED = False
-_RESNET_FEATURE_IMPORTED = False
 
 
 class ImageNormalizer:
@@ -75,12 +71,9 @@ class ResNetPolicy(torch.nn.Module):
     """
     def __init__(self, n_actions=16, backbone='resnet18'):
         super().__init__()
-        global _RESNET_IMPORTED
-        if not _RESNET_IMPORTED:
-            from torchvision.models import resnet18, resnet34
-            ResNetPolicy._resnet18 = resnet18
-            ResNetPolicy._resnet34 = resnet34
-            _RESNET_IMPORTED = True
+        from torchvision.models import resnet18, resnet34
+        ResNetPolicy._resnet18 = resnet18
+        ResNetPolicy._resnet34 = resnet34
 
         if backbone == 'resnet18':
             self.backbone = ResNetPolicy._resnet18(weights=None)
@@ -94,37 +87,6 @@ class ResNetPolicy(torch.nn.Module):
 
     def forward(self, x):
         return self.backbone(x)
-
-
-# ---------- ResNet Feature Extractor (for PU models) ----------
-class ResNetFeatureExtractor(torch.nn.Module):
-    """Return 512-dim features after global avgpool (before FC)."""
-    def __init__(self, backbone="resnet34", pretrained=True):
-        super().__init__()
-        global _RESNET_FEATURE_IMPORTED
-        if not _RESNET_FEATURE_IMPORTED:
-            from torchvision.models import resnet18, resnet34, ResNet18_Weights, ResNet34_Weights
-            ResNetFeatureExtractor._resnet18 = resnet18
-            ResNetFeatureExtractor._resnet34 = resnet34
-            ResNetFeatureExtractor._weights18 = ResNet18_Weights
-            ResNetFeatureExtractor._weights34 = ResNet34_Weights
-            _RESNET_FEATURE_IMPORTED = True
-
-        if backbone == "resnet18":
-            weights = ResNetFeatureExtractor._weights18.IMAGENET1K_V1 if pretrained else None
-            base = ResNetFeatureExtractor._resnet18(weights=weights)
-        elif backbone == "resnet34":
-            weights = ResNetFeatureExtractor._weights34.IMAGENET1K_V1 if pretrained else None
-            base = ResNetFeatureExtractor._resnet34(weights=weights)
-        else:
-            raise ValueError("backbone must be 'resnet18' or 'resnet34'")
-        self.stem = torch.nn.Sequential(*list(base.children())[:-1])  # conv..avgpool
-
-    def forward(self, x):
-        with torch.no_grad():
-            f = self.stem(x)           # [B, 512, 1, 1]
-            f = f.view(f.size(0), -1)  # [B, 512]
-        return f
 
 
 def _to_chw(img_hwc: np.ndarray) -> torch.Tensor:
@@ -142,20 +104,9 @@ def _resize_chw(x_chw: torch.Tensor, target=256) -> torch.Tensor:
 @torch.no_grad()
 def extract_resnet_features(frame_hw3, normalizer, model, device, target=256):
     """
-    Extract ResNet features from a single frame.
-    frame_hw3: numpy array [H,W,3], float32 in [0,1] or uint8 in [0,255]
-    returns: numpy array [512] (float32)
+    Deprecated: PU models removed; this function is unused and kept only for backward compatibility.
     """
-    assert frame_hw3.ndim == 3 and frame_hw3.shape[2] == 3, f"Expected [H,W,3], got {frame_hw3.shape}"
-    x_np = frame_hw3.astype(np.float32)
-    if x_np.max() > 1.0:  # uint8 input
-        x_np = x_np / 255.0
-    x = _to_chw(x_np)  # [3,H,W]
-    x = _resize_chw(x, target)  # [3,256,256]
-    x = normalizer(x).to(device)  # normalize
-    x = x.unsqueeze(0)  # [1,3,256,256]
-    feats = model(x)  # [1,512]
-    return feats.squeeze(0).cpu().numpy()  # [512]
+    raise RuntimeError("extract_resnet_features is no longer supported (PU models removed).")
 
 
 # ---------- Model builder that understands both checkpoint formats ----------
@@ -246,93 +197,18 @@ def bc_policy(models, state, skill):
     return action
 
 
-# ---------- PU start / end utilities ----------
+# ---------- PU start / end utilities (removed) ----------
 def load_pu_start_models(models_dir: str):
-    models = []
-    if not os.path.isdir(models_dir):
-        print(f"[WARN] PU start models directory not found: {models_dir}. All skills will be always available.")
-        return models
-    for fname in os.listdir(models_dir):
-        if not fname.endswith("_meta.json"):
-            continue
-        skill = fname[:-10]  # strip "_meta.json"
-        meta_path  = os.path.join(models_dir, f"{skill}_meta.json")
-        model_path = os.path.join(models_dir, f"{skill}_clf.joblib")
-        if not os.path.exists(model_path):
-            continue
-        try:
-            with open(meta_path, "r") as f:
-                meta = json.load(f)
-            thr = float(meta["threshold"])
-            clf = joblib_load(model_path)
-            models.append({"skill": skill, "clf": clf, "thr": thr, "meta": meta})
-        except Exception as e:
-            print(f"[WARN] Skipping {skill}: {e}")
-    if len(models) == 0:
-        print(f"[WARN] No PU start models found in {models_dir}. All skills will be always available.")
-    return models
+    raise RuntimeError("PU models are no longer supported.")
 
 def applicable_pu_start_models(models, state, *, return_details=False, eps=0.0):
-    state = np.asarray(state)
-    if state.ndim == 1:
-        X = state.reshape(1, -1)
-    elif state.ndim == 2 and state.shape[0] == 1:
-        X = state
-    else:
-        raise ValueError("`state` must be a single feature vector of shape [d] or [1,d].")
-
-    rows = []
-    for m in models:
-        prob = float(m["clf"].predict_proba(X)[:, 1][0])
-        thr  = float(m["thr"])
-        margin = prob - thr
-        is_applicable = prob >= (thr + eps)
-        rows.append({
-            "skill": m["skill"],
-            "prob": prob,
-            "thr": thr,
-            "margin": margin,
-            "applicable": is_applicable
-        })
-
-    rows.sort(key=lambda r: r["margin"], reverse=True)
-    applicable = [r for r in rows if r["applicable"]]
-    return rows if return_details else [r["skill"] for r in applicable]
+    raise RuntimeError("PU models are no longer supported.")
 
 def load_pu_end_model(models_dir: str, skill: str):
-    model_path = os.path.join(models_dir, f"{skill}_clf.joblib")
-    meta_path  = os.path.join(models_dir, f"{skill}_meta.json")
-
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Missing model file: {model_path}")
-    if not os.path.exists(meta_path):
-        raise FileNotFoundError(f"Missing meta file:  {meta_path}")
-
-    clf = joblib_load(model_path)
-    with open(meta_path, "r") as f:
-        meta = json.load(f)
-
-    thr = float(meta["threshold"])
-    return {"skill": skill, "clf": clf, "thr": thr, "meta": meta}
+    raise RuntimeError("PU models are no longer supported.")
 
 def predict_pu_end_state(model: dict, state) -> dict:
-    state = np.asarray(state)
-    if state.ndim == 1:
-        X = state.reshape(1, -1)
-    elif state.ndim == 2 and state.shape[0] == 1:
-        X = state
-    else:
-        raise ValueError("`state` must be a single feature vector of shape [d] or [1, d].")
-
-    prob = float(model["clf"].predict_proba(X)[:, 1][0])
-    thr = float(model["thr"])
-    margin = prob - thr
-    return {
-        "prob": prob,
-        "threshold": thr,
-        "is_end": bool(prob >= thr),
-        "margin": margin,
-    }
+    raise RuntimeError("PU models are no longer supported.")
 
 
 # ---------- ResNet feature extractor + model bank loaders ----------
@@ -348,81 +224,16 @@ def load_all_models(skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickax
         ckpt_path = os.path.join(root, bc_checkpoint_dir, f'{skill}_policy_resnet34_pt.pt')
         bc_models[skill] = load_policy(ckpt_path)
 
-    # Load normalization stats from dataset_mean_std.npy
-    stats_path = os.path.join(root, dataset_mean_std_path)
-    if not os.path.exists(stats_path):
-        raise FileNotFoundError(
-            f"Normalization stats not found at {stats_path}. "
-            f"Run get_resnet_features.py with --compute_dataset_mean_std to generate it."
-        )
-    stats = np.load(stats_path, allow_pickle=True).item()
-    mean = tuple([float(x) for x in stats["mean"]])
-    std = tuple([float(x) for x in stats["std"]])
-    backbone_from_stats = stats.get("backbone", backbone)
-    if backbone_from_stats != backbone:
-        print(f"[WARN] Stats file specifies backbone={backbone_from_stats}, but requested {backbone}. Using {backbone_from_stats}.")
-        backbone = backbone_from_stats
-
-    # Create ResNet feature extractor
-    device = torch.device('cuda' if torch.cuda.is_available() else
-                         ('mps' if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available() else 'cpu'))
-    resnet_extractor = ResNetFeatureExtractor(backbone=backbone, pretrained=True).to(device).eval()
-    normalizer = ImageNormalizer(mean, std)
-
-    pu_start_models_dir_path = os.path.join(root, pu_start_models_dir)
-    pu_start_models = load_pu_start_models(pu_start_models_dir_path)
-
-    pu_end_models_dir_path = os.path.join(root, pu_end_models_dir)
-    pu_end_models = {}
-    if not os.path.isdir(pu_end_models_dir_path):
-        print(f"[WARN] PU end models directory not found: {pu_end_models_dir_path}. Skills will only terminate on max_skill_len or episode end.")
-    else:
-        for skill in skill_list:
-            try:
-                pu_end_models[skill] = load_pu_end_model(pu_end_models_dir_path, skill)
-            except FileNotFoundError:
-                print(f"[WARN] No PU end model for skill '{skill}'")
-    
-    if len(pu_end_models) == 0:
-        print(f"[WARN] No PU end models loaded. Skills will only terminate on max_skill_len or episode end.")
-
     return {
         "skills": skill_list,  # canonical order
         "bc_models": bc_models,
-        "termination_models": pu_end_models,
-        "start_models": pu_start_models,
-        "resnet_extractor": resnet_extractor,
-        "resnet_normalizer": normalizer,
-        "resnet_device": device,
-        "resnet_backbone": backbone
     }
 
 
 def available_skills(models, state):
-    # state: HxWx3 image (uint8 or float32) -> ResNet features
-    state = np.asarray(state)
-    assert state.ndim == 3 and state.shape[2] == 3, f"Expected [H,W,3] image, got {state.shape}"
-    
-    # If no start models, all skills are always available
-    if not models.get("start_models") or len(models["start_models"]) == 0:
-        order = models["skills"]
-        return np.ones(len(order), dtype=bool)
-    
-    # Extract ResNet features
-    features = extract_resnet_features(
-        state,
-        models["resnet_normalizer"],
-        models["resnet_extractor"],
-        models["resnet_device"]
-    )
-    
-    # Reshape to [1, 512] for PU models
-    Xf = features.reshape(1, -1)
-
-    rows = applicable_pu_start_models(models["start_models"], Xf, return_details=True, eps=0.0)
-    applicable = {r["skill"] for r in rows if r["applicable"]}
+    # PU gating removed: all skills are always available
     order = models["skills"]
-    return np.array([s in applicable for s in order], dtype=bool)
+    return np.ones(len(order), dtype=bool)
 
 
 class FixedSeedAlways(gym.Wrapper):
@@ -523,58 +334,15 @@ def _clear_rt(models: Dict[str, Any], skill: str, call_id: Optional[int]) -> Non
 
 def should_terminate(models, state, skill, call_id: Optional[int] = None):
     """
-    Phase-aware termination.
-    - Primitive skill: use its end-model directly.
-    - Composite skill: only allow termination when we're on the *final* leaf, and its end fires,
-      or when we've already advanced past the last leaf (idx >= len(seq)).
+    PU termination removed: never terminate via classifier.
+    The environment will end options only on episode end or budget exhaustion.
     """
-    # Composite skill special-case
-    seq = _get_seq_for_skill(models, skill)
-    if seq is not None:
-        # We are in a production/composite
-        rt = _rt_for(models, skill, call_id)
-        idx = int(rt.get("idx", 0))
-        # Finished all leaves already?
-        if idx >= len(seq):
-            return True
-        # Only last leaf can end the composite
-        last_leaf = seq[-1]
-        # If we're not yet on the last leaf, composite must not end
-        if idx < len(seq) - 1:
-            return False
-        # We *are* on the last leaf: gate by its end detector
-        return _primitive_should_terminate(models, state, last_leaf)
-
-    # Primitive skill
-    return _primitive_should_terminate(models, state, skill)
+    return False
 
 
 def _primitive_should_terminate(models, state, skill) -> bool:
-    # If no termination models exist, never terminate based on PU models
-    if not models.get("termination_models") or len(models["termination_models"]) == 0:
-        return False
-    
-    # state: HxWx3 image (uint8 or float32) -> ResNet features
-    state = np.asarray(state)
-    assert state.ndim == 3 and state.shape[2] == 3, f"Expected [H,W,3] image, got {state.shape}"
-    
-    tm = models["termination_models"].get(skill)
-    if tm is None:
-        # No end model for this skill: never terminate based on classifier
-        return False
-    
-    # Extract ResNet features
-    features = extract_resnet_features(
-        state,
-        models["resnet_normalizer"],
-        models["resnet_extractor"],
-        models["resnet_device"]
-    )
-    
-    # Reshape to [1, 512] for PU models
-    X_feats = features.reshape(1, -1)
-    
-    return predict_pu_end_state(tm, X_feats)["is_end"]
+    # Legacy shim; PU removed, never terminate based on classifier
+    return False
 
 
 # option_helpers.py
@@ -587,16 +355,7 @@ def bc_policy_hierarchy(models, state, skill, call_id: Optional[int] = None, max
         idx = int(rt.get("idx", 0))
         leaf_steps = int(rt.get("leaf_steps", 0))
 
-        # If detector says current leaf is done, advance and reset per-leaf counter
-        if idx < len(seq):
-            cur = seq[idx]
-            if _primitive_should_terminate(models, state, cur):
-                idx += 1
-                rt["idx"] = idx
-                rt["leaf_steps"] = 0
-                leaf_steps = 0
-
-        # If a per-leaf cap is set and we’ve spent it, force advance
+        # Advance only by per-leaf cap (PU termination removed)
         if max_leaf_len is not None and idx < len(seq) and leaf_steps >= max_leaf_len:
             idx += 1
             rt["idx"] = idx
@@ -679,14 +438,9 @@ def compile_productions_into_skill_bank(
     """
     For each production node P:
       - Create a pseudo-skill 'Production_<P>'
-      - start model := start PU of first leaf skill
-      - end model   := end  PU of last  leaf skill (kept for availability gating;
-                       composite termination is phase-aware in should_terminate)
-      - bc model    := sentinel ('__COMPOSITE__', [child_skill_names...])
+      - bc model := sentinel ('__COMPOSITE__', [child_skill_names...])
+      PU models removed: composites are always included and available.
     """
-    start_models_list = models.get("start_models") or []
-    start_by_skill = {m["skill"]: m for m in start_models_list}
-    end_by_skill   = models.get("termination_models", {}) or {}
     skills_set     = set(models["skills"])
 
     if "composite_runtime" not in models:
@@ -695,9 +449,6 @@ def compile_productions_into_skill_bank(
         models["call_id_ctr"] = 0
 
     composite_names = []
-    have_start_models = len(start_by_skill) > 0
-    have_end_models = len(end_by_skill) > 0
-
     for tree in hierarchies:
         for pnode in _iter_production_nodes(tree):
             pid = int(pnode["production"])
@@ -711,42 +462,15 @@ def compile_productions_into_skill_bank(
                 print(f"[WARN] Missing symbol in symbol_map: {e}; skipping Production_{pid}")
                 continue
 
-            first_leaf, last_leaf = seq[0], seq[-1]
-
-            missing_start = have_start_models and first_leaf not in start_by_skill
-            missing_end = have_end_models and last_leaf not in end_by_skill
-            if missing_start:
-                print(f"[WARN] No start PU for '{first_leaf}' (needed by Production_{pid}); skipping.")
-                continue
-            if missing_end:
-                print(f"[WARN] No end PU for '{last_leaf}' (needed by Production_{pid}); skipping.")
-                continue
-
             name = f"Production_{pid}"
 
-            if name in models["bc_models"] and name in models["termination_models"]:
+            if name in models["bc_models"]:
                 continue
 
             # 1) BC model sentinel (sequence of leaves)
             models["bc_models"][name] = ("__COMPOSITE__", seq)
 
-            # 2) Keep alias of last leaf's end model (used for availability gating & legacy)
-            if have_end_models:
-                models["termination_models"][name] = end_by_skill[last_leaf]
-
-            # 3) Start: alias of first leaf's start PU (for availability)
-            if have_start_models:
-                first_leaf_start = start_by_skill[first_leaf]
-                start_models_list.append({
-                    "skill": name,
-                    "clf": first_leaf_start["clf"],
-                    "thr": first_leaf_start["thr"],
-                    "meta": dict(first_leaf_start.get("meta", {})),
-                })
-                # Keep lookup in sync
-                start_by_skill[name] = start_models_list[-1]
-
-            # 4) Expose in skills list
+            # 2) Expose in skills list
             if name not in skills_set:
                 models["skills"].append(name)
                 skills_set.add(name)
@@ -789,53 +513,9 @@ def load_all_models_hierarchy(
         ckpt_path = _find_ckpt(skill)
         bc_models[skill] = load_policy(ckpt_path)
 
-    # Load normalization stats from dataset_mean_std.npy
-    stats_path = os.path.join(root, dataset_mean_std_path)
-    if not os.path.exists(stats_path):
-        raise FileNotFoundError(
-            f"Normalization stats not found at {stats_path}. "
-            f"Run get_resnet_features.py with --compute_dataset_mean_std to generate it."
-        )
-    stats = np.load(stats_path, allow_pickle=True).item()
-    mean = tuple([float(x) for x in stats["mean"]])
-    std = tuple([float(x) for x in stats["std"]])
-    backbone_from_stats = stats.get("backbone", backbone_hint)
-    if backbone_from_stats != backbone_hint:
-        print(f"[WARN] Stats file specifies backbone={backbone_from_stats}, but requested {backbone_hint}. Using {backbone_from_stats}.")
-        backbone_hint = backbone_from_stats
-
-    # Create ResNet feature extractor
-    device = torch.device('cuda' if torch.cuda.is_available() else
-                         ('mps' if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available() else 'cpu'))
-    resnet_extractor = ResNetFeatureExtractor(backbone=backbone_hint, pretrained=True).to(device).eval()
-    normalizer = ImageNormalizer(mean, std)
-
-    pu_start_models_dir_path = os.path.join(root, pu_start_models_dir)
-    pu_start_models = load_pu_start_models(pu_start_models_dir_path)
-
-    pu_end_models_dir_path = os.path.join(root, pu_end_models_dir)
-    pu_end_models = {}
-    if not os.path.isdir(pu_end_models_dir_path):
-        print(f"[WARN] PU end models directory not found: {pu_end_models_dir_path}. Skills will only terminate on max_skill_len or episode end.")
-    else:
-        for skill in skill_list:
-            try:
-                pu_end_models[skill] = load_pu_end_model(pu_end_models_dir_path, skill)
-            except FileNotFoundError:
-                print(f"[WARN] No PU end model for skill '{skill}'")
-    
-    if len(pu_end_models) == 0:
-        print(f"[WARN] No PU end models loaded. Skills will only terminate on max_skill_len or episode end.")
-
     models = {
         "skills": list(skill_list),
         "bc_models": bc_models,                 # {skill: (model,..) or ("__COMPOSITE__", seq)}
-        "termination_models": pu_end_models,    # end detectors (primitive; composites get alias of last leaf)
-        "start_models": pu_start_models,        # start detectors
-        "resnet_extractor": resnet_extractor,
-        "resnet_normalizer": normalizer,
-        "resnet_device": device,
-        "resnet_backbone": backbone_hint,
         "composite_runtime": {},                # instance state
         "call_id_ctr": 0,                       # instance id counter
     }
