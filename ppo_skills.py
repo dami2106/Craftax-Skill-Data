@@ -7,7 +7,7 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
 from sb3_contrib.common.wrappers import ActionMasker  # <-- ensures masks used in rollout
 
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage, VecMonitor
 
 from top_down_env_gymnasium import CraftaxTopDownEnv
@@ -35,8 +35,8 @@ parser.add_argument("--dataset_mean_std_path", type=str, default='dataset_mean_s
 
 parser.add_argument("--run_name", type=str, default='test_ppo_options')
 parser.add_argument("--ppo_seed", type=int, default=888)
-parser.add_argument("--target_primitive_steps", type=int, default=150_000)
-parser.add_argument("--max_decision_steps", type=int, default=1_000_000)
+parser.add_argument("--target_primitive_steps", type=int, default=250_000)
+parser.add_argument("--max_decision_steps", type=int, default=100_000)
 
 args, _ = parser.parse_known_args()
 
@@ -107,6 +107,105 @@ class PrimitiveStepStopper(BaseCallback):
         """Get the total cumulative primitive steps across all episodes."""
         current_steps = sum(self._last_primitive_steps.values())
         return self._cumulative_steps + current_steps
+
+
+class PrimitiveStepLogger(BaseCallback):
+    """
+    Logs TensorBoard metrics using primitive steps as the x-axis instead of decision steps.
+    Extracts episode statistics from VecMonitor and logs them with primitive step counts.
+    """
+    
+    def __init__(self, verbose: int = 0, log_interval: int = 100):
+        super().__init__(verbose=verbose)
+        self.log_interval = log_interval
+        self._cumulative_steps = 0
+        self._last_primitive_steps = {}
+        self._last_log_step = 0
+        
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        dones = self.locals.get("dones", []) if "dones" in self.locals else [False] * len(infos)
+        
+        # Track cumulative primitive steps (same logic as PrimitiveStepStopper)
+        for env_idx, info in enumerate(infos):
+            if not isinstance(info, dict):
+                continue
+            primitive_steps = info.get("primitive_steps")
+            if primitive_steps is None:
+                continue
+            
+            primitive_steps = int(primitive_steps)
+            last_val = self._last_primitive_steps.get(env_idx, 0)
+            done = dones[env_idx] if env_idx < len(dones) else False
+            
+            if primitive_steps < last_val or done:
+                if last_val > 0:
+                    self._cumulative_steps += last_val
+            
+            self._last_primitive_steps[env_idx] = primitive_steps
+        
+        current_total = self._cumulative_steps + sum(self._last_primitive_steps.values())
+        
+        # Log metrics periodically based on primitive steps
+        if current_total - self._last_log_step >= self.log_interval:
+            try:
+                # VecMonitor exposes stats via get_attr
+                ep_rew_mean = None
+                ep_len_mean = None
+                
+                # Try to get episode statistics from VecMonitor
+                if hasattr(self.training_env, "get_attr"):
+                    try:
+                        # VecMonitor stores episode_returns and episode_lengths
+                        ep_returns = self.training_env.get_attr("episode_returns")
+                        ep_lengths = self.training_env.get_attr("episode_lengths")
+                        
+                        if ep_returns and len(ep_returns) > 0 and len(ep_returns[0]) > 0:
+                            # Average over all envs, use last 100 episodes
+                            all_returns = []
+                            for rets in ep_returns:
+                                all_returns.extend(rets[-100:] if len(rets) > 100 else rets)
+                            if all_returns:
+                                ep_rew_mean = np.mean(all_returns)
+                        
+                        if ep_lengths and len(ep_lengths) > 0 and len(ep_lengths[0]) > 0:
+                            all_lengths = []
+                            for lens in ep_lengths:
+                                all_lengths.extend(lens[-100:] if len(lens) > 100 else lens)
+                            if all_lengths:
+                                ep_len_mean = np.mean(all_lengths)
+                    except (AttributeError, IndexError):
+                        pass
+                
+                # Also try to get from info dict (RecordEpisodeStatistics)
+                if ep_rew_mean is None or ep_len_mean is None:
+                    for info in infos:
+                        if isinstance(info, dict):
+                            if "episode" in info:
+                                ep_info = info["episode"]
+                                if "r" in ep_info:
+                                    ep_rew_mean = float(ep_info["r"])
+                                if "l" in ep_info:
+                                    ep_len_mean = float(ep_info["l"])
+                                break
+                
+                # Log to TensorBoard with primitive steps as x-axis
+                if ep_rew_mean is not None:
+                    self.logger.record("rollout_primitive/ep_rew_mean", ep_rew_mean)
+                if ep_len_mean is not None:
+                    self.logger.record("rollout_primitive/ep_len_mean", ep_len_mean)
+                
+                # Also log the primitive step count itself
+                self.logger.record("rollout_primitive/total_primitive_steps", current_total)
+                
+                # Dump to TensorBoard with primitive steps as the step counter
+                self.logger.dump(step=current_total)
+                self._last_log_step = current_total
+            except Exception as e:
+                if self.verbose > 0:
+                    print(f"[PrimitiveStepLogger] Warning: Could not log metrics: {e}")
+        
+        return True
 
 
 def make_options_env(*, seed: int, render_mode=None,  max_episode_steps=100):
@@ -198,15 +297,20 @@ if __name__ == "__main__":
 
 
 
+    # Combine callbacks: stopper + logger
+    stopper = PrimitiveStepStopper(
+        target_primitive_steps=args.target_primitive_steps,
+        verbose=1,
+    )
+    logger = PrimitiveStepLogger(verbose=1, log_interval=100)
+    callback = CallbackList([stopper, logger])
+    
     model.learn(
         total_timesteps=args.max_decision_steps,
         tb_log_name=args.run_name,   
         log_interval=1,
         progress_bar=True,
-        callback=PrimitiveStepStopper(
-            target_primitive_steps=args.target_primitive_steps,
-            verbose=1,
-        ),
+        callback=callback,
     )
-    model.save(args.run_name)
+    # model.save(args.run_name)
 

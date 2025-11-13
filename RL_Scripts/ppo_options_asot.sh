@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=ppo_craftax_options_asot      # Job name
 #SBATCH --partition=bigbatch                     # Replace with your cluster's GPU partition name
-#SBATCH --output=/home-mscluster/dharvey/HiSD/experiments_diss/ppo_options_asot_woodpick_all_seeds.out  # Standard output and error log
+#SBATCH --output=/home-mscluster/dharvey/HiSD/experiments_diss/ppo_options_asot_woodpick_all_no_pu_smdp_seeds.out   # Standard output and error log
 # Load your environment
 
 source ~/.bashrc
@@ -13,7 +13,9 @@ conda activate SOTA
 # seeds=(2106 1 404 1408 506)
 
 # seeds=(888 0 333 9 42 2106 1 404 1408 506 777 123 1111 2024 999)
+# seeds=(888 0 333 9 42)
 seeds=(888 0 333 9 42)
+
 
 
 
