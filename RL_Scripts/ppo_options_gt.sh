@@ -11,9 +11,10 @@ conda activate SOTA
 # Define your list of seeds
 # seeds=(888 0 333 9 42)
 # seeds=(2106 1 404 1408 506)
-seeds=(888)
+# seeds=(888)
 # seeds=(888 0 333 9 42 2106 1 404 1408 506 777 123 1111 2024 999)
 # seeds=(888 0 333 9 42)
+seeds=(888 0 333)
 
 
 

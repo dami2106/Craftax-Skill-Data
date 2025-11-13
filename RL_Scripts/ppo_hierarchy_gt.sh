@@ -10,11 +10,12 @@ conda activate SOTA
 
 # Define your list of seeds
 # seeds=(888 0 333 9 42)
-seeds=(888)
+# seeds=(888)
 # seeds=(2106 1 404 1408 506)
 
 # seeds=(888 0 333 9 42 2106 1 404 1408 506 777 123 1111 2024 999)
 # seeds=(888 0 333 9 42)
+seeds=(888 0 333)
 
 
 
@@ -23,9 +24,6 @@ for seed in "${seeds[@]}"; do
     echo "=========================================="
     echo "Starting PPO training with seed: $seed"
     echo "=========================================="
-
-    # python ppo_hierarchy.py --skill_list wooden_pickaxe stone_pickaxe wood stone table --root Traces/stone_pick_static --bc_checkpoint_dir bc_checkpoints_gt\
-    # --pu_start_models_dir pu_start_resnet_gt --pu_end_models_dir pu_end_resnet_gt --run_name ppo_hierarchy_groundtruth_$seed --hierarchy_dir Traces/stone_pick_static/hierarchy_data/ground_truth_hierarchy --ppo_seed "$seed"
 
     python ppo_hierarchy.py --skill_list wooden_pickaxe stone_pickaxe wood stone table --root Traces/stone_pick_static --bc_checkpoint_dir bc_checkpoints_gt\
     --run_name ppo_hierarchy_groundtruth_$seed --hierarchy_dir Traces/stone_pick_static/hierarchy_data/ground_truth_hierarchy --ppo_seed "$seed"
