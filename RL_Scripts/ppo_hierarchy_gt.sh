@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=ppo_craftax_hierarchy_gt      # Job name
 #SBATCH --partition=bigbatch                     # Replace with your cluster's GPU partition name
-#SBATCH --output=/home-mscluster/dharvey/HiSD/experiments_diss/ppo_hierarchy_groundtruth_all_seeds.out  # Standard output and error log
+#SBATCH --output=/home-mscluster/dharvey/HiSD/experiments_diss/ppo_hierarchy_groundtruth_all_no_pu_smdp_seeds.out  # Standard output and error log
 # Load your environment
 
 source ~/.bashrc

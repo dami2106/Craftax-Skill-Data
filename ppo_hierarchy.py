@@ -38,7 +38,7 @@ parser.add_argument("--dataset_mean_std_path", type=str, default='dataset_mean_s
 parser.add_argument("--run_name", type=str, default='test_ppo_hierarchy')
 
 parser.add_argument("--ppo_seed", type=int, default=888)
-parser.add_argument("--target_primitive_steps", type=int, default=100_000)
+parser.add_argument("--target_primitive_steps", type=int, default=150_000)
 parser.add_argument("--max_decision_steps", type=int, default=1_000_000)
 
 
@@ -94,7 +94,7 @@ class PrimitiveStepStopper(BaseCallback):
             if primitive_steps < last_val or done:
                 if last_val > 0:  # Only add if we had steps in the previous episode
                     self._cumulative_steps += last_val
-                    if self.verbose > 0 and self.num_calls % 1000 == 0:
+                    if self.verbose > 0 and self.n_calls % 1000 == 0:
                         print(
                             f"[PrimitiveStepStopper] Episode ended: added {last_val} steps. "
                             f"Total cumulative: {self._cumulative_steps}"
@@ -107,9 +107,9 @@ class PrimitiveStepStopper(BaseCallback):
             current_total = self._cumulative_steps + primitive_steps
             
             # Periodic logging
-            if self.verbose > 0 and self.num_calls % 1000 == 0:
+            if self.verbose > 0 and self.n_calls % 1000 == 0:
                 print(
-                    f"[PrimitiveStepStopper] Step {self.num_calls}: "
+                    f"[PrimitiveStepStopper] Step {self.n_calls}: "
                     f"Current episode: {primitive_steps}, "
                     f"Cumulative: {self._cumulative_steps}, "
                     f"Total: {current_total}/{self.target}"
