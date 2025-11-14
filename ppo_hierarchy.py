@@ -25,7 +25,7 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_primitives", type=int, default=16)
-parser.add_argument("--gamma", type=float, default=0.99)
+parser.add_argument("--gamma", type=float, default=1)
 parser.add_argument("--max_skill_len", type=int, default=25)
 
 parser.add_argument("--skill_list", nargs="+", default=['wood_pick'])
@@ -38,8 +38,8 @@ parser.add_argument("--dataset_mean_std_path", type=str, default='dataset_mean_s
 parser.add_argument("--run_name", type=str, default='test_ppo_hierarchy')
 
 parser.add_argument("--ppo_seed", type=int, default=888)
-parser.add_argument("--target_primitive_steps", type=int, default=250_000)
-parser.add_argument("--max_decision_steps", type=int, default=100_000)
+parser.add_argument("--target_primitive_steps", type=int, default=300_000)
+parser.add_argument("--max_decision_steps", type=int, default=500_000)
 
 
 args, _ = parser.parse_known_args()
@@ -133,21 +133,27 @@ class PrimitiveStepStopper(BaseCallback):
 class PrimitiveStepLogger(BaseCallback):
     """
     Logs TensorBoard metrics using primitive steps as the x-axis instead of decision steps.
-    Extracts episode statistics from VecMonitor and logs them with primitive step counts.
+    Maintains a sliding window of episode statistics (like SB3's Monitor) and logs their averages.
     """
     
-    def __init__(self, verbose: int = 0, log_interval: int = 100):
+    def __init__(self, verbose: int = 0, log_interval: int = 100, window_size: int = 100):
         super().__init__(verbose=verbose)
         self.log_interval = log_interval
+        self.window_size = window_size
         self._cumulative_steps = 0
         self._last_primitive_steps = {}
         self._last_log_step = 0
+        
+        # Buffers for sliding window averages (like SB3's Monitor)
+        self.episode_returns = []
+        self.episode_lengths_decision = []
+        self.episode_lengths_primitive = []
         
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
         dones = self.locals.get("dones", []) if "dones" in self.locals else [False] * len(infos)
         
-        # Track cumulative primitive steps (same logic as PrimitiveStepStopper)
+        # Track cumulative primitive steps and collect episode stats on episode end
         for env_idx, info in enumerate(infos):
             if not isinstance(info, dict):
                 continue
@@ -159,6 +165,29 @@ class PrimitiveStepLogger(BaseCallback):
             last_val = self._last_primitive_steps.get(env_idx, 0)
             done = dones[env_idx] if env_idx < len(dones) else False
             
+            # On episode end, collect stats and add to buffers
+            if done and "episode" in info:
+                ep_info = info["episode"]
+                ep_return = ep_info.get("r")
+                ep_len_decision = ep_info.get("l")
+                ep_len_primitive = primitive_steps  # This is the primitive steps for the completed episode
+                
+                if ep_return is not None:
+                    self.episode_returns.append(float(ep_return))
+                    if len(self.episode_returns) > self.window_size:
+                        self.episode_returns.pop(0)
+                
+                if ep_len_decision is not None:
+                    self.episode_lengths_decision.append(float(ep_len_decision))
+                    if len(self.episode_lengths_decision) > self.window_size:
+                        self.episode_lengths_decision.pop(0)
+                
+                if ep_len_primitive is not None:
+                    self.episode_lengths_primitive.append(int(ep_len_primitive))
+                    if len(self.episode_lengths_primitive) > self.window_size:
+                        self.episode_lengths_primitive.pop(0)
+            
+            # Update cumulative tracking
             if primitive_steps < last_val or done:
                 if last_val > 0:
                     self._cumulative_steps += last_val
@@ -170,51 +199,18 @@ class PrimitiveStepLogger(BaseCallback):
         # Log metrics periodically based on primitive steps
         if current_total - self._last_log_step >= self.log_interval:
             try:
-                # VecMonitor exposes stats via get_attr
-                ep_rew_mean = None
-                ep_len_mean = None
-                
-                # Try to get episode statistics from VecMonitor
-                if hasattr(self.training_env, "get_attr"):
-                    try:
-                        # VecMonitor stores episode_returns and episode_lengths
-                        ep_returns = self.training_env.get_attr("episode_returns")
-                        ep_lengths = self.training_env.get_attr("episode_lengths")
-                        
-                        if ep_returns and len(ep_returns) > 0 and len(ep_returns[0]) > 0:
-                            # Average over all envs, use last 100 episodes
-                            all_returns = []
-                            for rets in ep_returns:
-                                all_returns.extend(rets[-100:] if len(rets) > 100 else rets)
-                            if all_returns:
-                                ep_rew_mean = np.mean(all_returns)
-                        
-                        if ep_lengths and len(ep_lengths) > 0 and len(ep_lengths[0]) > 0:
-                            all_lengths = []
-                            for lens in ep_lengths:
-                                all_lengths.extend(lens[-100:] if len(lens) > 100 else lens)
-                            if all_lengths:
-                                ep_len_mean = np.mean(all_lengths)
-                    except (AttributeError, IndexError):
-                        pass
-                
-                # Also try to get from info dict (RecordEpisodeStatistics)
-                if ep_rew_mean is None or ep_len_mean is None:
-                    for info in infos:
-                        if isinstance(info, dict):
-                            if "episode" in info:
-                                ep_info = info["episode"]
-                                if "r" in ep_info:
-                                    ep_rew_mean = float(ep_info["r"])
-                                if "l" in ep_info:
-                                    ep_len_mean = float(ep_info["l"])
-                                break
+                # Compute means over sliding window (like SB3's Monitor)
+                ep_rew_mean = np.mean(self.episode_returns) if len(self.episode_returns) > 0 else None
+                ep_len_decision_mean = np.mean(self.episode_lengths_decision) if len(self.episode_lengths_decision) > 0 else None
+                ep_len_primitive_mean = np.mean(self.episode_lengths_primitive) if len(self.episode_lengths_primitive) > 0 else None
                 
                 # Log to TensorBoard with primitive steps as x-axis
                 if ep_rew_mean is not None:
                     self.logger.record("rollout_primitive/ep_rew_mean", ep_rew_mean)
-                if ep_len_mean is not None:
-                    self.logger.record("rollout_primitive/ep_len_mean", ep_len_mean)
+                if ep_len_decision_mean is not None:
+                    self.logger.record("rollout_primitive/ep_len_decision_mean", ep_len_decision_mean)
+                if ep_len_primitive_mean is not None:
+                    self.logger.record("rollout_primitive/ep_len_primitive_mean", ep_len_primitive_mean)
                 
                 # Also log the primitive step count itself
                 self.logger.record("rollout_primitive/total_primitive_steps", current_total)
@@ -305,9 +301,16 @@ if __name__ == "__main__":
     print("Training PPO on options to get wood_pickaxe SEED : ", args.ppo_seed)
     print(f"Target primitive steps: {args.target_primitive_steps}")
 
+    # Optimize PPO for limited decision steps (~1,700 with 250k primitive steps)
+    # With ~146 primitive steps per decision step, we need efficient learning
     model = MaskablePPO(
         "CnnPolicy",                   # pixels -> CNN
         train_env,
+        n_steps=128,                   # Reduced from default 2048: allows ~13 rollouts instead of 1
+        # n_epochs=30,                   # Increased from default 10: more learning per rollout
+        batch_size=64,                 # Smaller batches for more frequent updates
+        learning_rate=3e-4,            # Slightly higher LR for faster learning
+        gamma=1.0,                     # Use gamma=1.0 for fairness (no discounting asymmetry)
         verbose=1,
         tensorboard_log="./tb_logs_ppo_craftax",
         device="auto",
