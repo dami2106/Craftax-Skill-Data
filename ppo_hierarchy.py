@@ -2,25 +2,20 @@
 import numpy as np
 import gymnasium as gym
 from gymnasium.wrappers import TimeLimit, RecordEpisodeStatistics
+import os
+import argparse
 
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
 from sb3_contrib.common.wrappers import ActionMasker  # <-- ensures masks used in rollout
 
-from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage, VecMonitor
+from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 
 from top_down_env_gymnasium_hierarchy import CraftaxTopDownEnv
 from top_down_env_gymnasium_hierarchy import OptionsOnTopEnv
+from option_helpers import FixedSeedAlways, to_gif_frame
 
 import imageio
-
-
-import gymnasium as gym
-from gymnasium.wrappers import TimeLimit, RecordEpisodeStatistics
-from sb3_contrib.common.wrappers import ActionMasker
-
-from option_helpers import FixedSeedAlways, to_gif_frame
-import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_primitives", type=int, default=16)
@@ -31,7 +26,7 @@ parser.add_argument("--skill_list", nargs="+", default=['wood_pick'])
 parser.add_argument("--symbol_map", type=str, default="truth")
 parser.add_argument("--root", type=str, default='Traces/stone_pickaxe_easy')
 parser.add_argument("--hierarchy_dir", type=str, default='Traces/stone_pickaxe_easy/hierarchy_data/Simple')
-parser.add_argument("--bc_checkpoint_dir", type=str, default='bc_checkpoints_resnet')
+parser.add_argument("--bc_checkpoint_dir", type=str, default='bc_checkpoints_pca')
 parser.add_argument("--pca_model_path", type=str, default='pca_models/pca_model_750.joblib')
 parser.add_argument("--pu_start_models_dir", type=str, default='pu_start_models')
 parser.add_argument("--pu_end_models_dir", type=str, default='pu_end_models')
@@ -60,7 +55,7 @@ else:
         "4": "4",
     }
 
-def make_options_env(*, seed: int, render_mode=None, max_episode_steps=100):
+def make_options_env(*, seed: int, render_mode=None, max_episode_steps=100, pca_model_path=None, use_pca=True):
     def _thunk():
         base = CraftaxTopDownEnv(
             render_mode=render_mode,
@@ -68,6 +63,8 @@ def make_options_env(*, seed: int, render_mode=None, max_episode_steps=100):
             done_item="wood_pickaxe",
             include_base_reward=False,
             return_uint8=True,
+            pca_model_path=pca_model_path,
+            use_pca=use_pca,
         )
         core = OptionsOnTopEnv(
             base,
@@ -132,14 +129,18 @@ def get_action_masks(env_or_vec):
 if __name__ == "__main__":
     TRAIN_SEED = 888  # set your fixed training seed here
 
-    train_env = DummyVecEnv([make_options_env(seed=TRAIN_SEED, render_mode=None)])
-    train_env = VecTransposeImage(train_env) 
+    # Construct PCA model path
+    pca_model_path = os.path.join(args.root, args.pca_model_path) if not os.path.isabs(args.pca_model_path) else args.pca_model_path
+    
+    train_env = DummyVecEnv([make_options_env(seed=TRAIN_SEED, render_mode=None, pca_model_path=pca_model_path, use_pca=True)])
+    # Don't use VecTransposeImage for PCA features (MLP policy expects 1D features)
     train_env = VecMonitor(train_env)
 
     print("Training PPO on options to get wood_pickaxe SEED : ", args.ppo_seed)
+    print(f"Using PCA features with model: {pca_model_path}")
 
     model = MaskablePPO(
-        "CnnPolicy",                   # pixels -> CNN
+        "MlpPolicy",                   # PCA features -> MLP
         train_env,
         verbose=1,
         tensorboard_log="./tb_logs_ppo_craftax",
@@ -150,7 +151,7 @@ if __name__ == "__main__":
 
 
     model.learn(
-        total_timesteps=100_000,
+        total_timesteps=250_000,
         tb_log_name=args.run_name,   # TB subdir
         log_interval=1,
         progress_bar=True,

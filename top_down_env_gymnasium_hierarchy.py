@@ -114,7 +114,16 @@ class OptionsOnTopEnv(gym.Env):
 
     @staticmethod
     def _as_uint8_frame(obs):
+        """
+        Ensure obs is HxWxC uint8 (for image-based BC models).
+        If obs already uint8 in [0,255], return as-is.
+        If float (assumed [0,1]), scale -> uint8.
+        Note: If obs is 1D (PCA features), return as-is (bc_policy handles both).
+        """
         if isinstance(obs, np.ndarray):
+            # If 1D, assume PCA features and return as-is
+            if obs.ndim == 1:
+                return obs
             if obs.dtype == np.uint8:
                 return obs
             return (np.clip(obs, 0, 1) * 255).astype(np.uint8)
@@ -141,8 +150,8 @@ class OptionsOnTopEnv(gym.Env):
 
         # No active option: primitives ON, options according to availability
         prim_mask = np.ones(P, dtype=bool)
-        frame = self._as_uint8_frame(self.current_obs)
-        full_mask = available_skills(self.models, frame)  # aligned to models["skills"]
+        # available_skills now handles both PCA features (1D) and images (3D)
+        full_mask = available_skills(self.models, self.current_obs)  # aligned to models["skills"]
 
         # Map any internal order to self.skills order (if different)
         skills_order = self.models["skills"]
@@ -169,9 +178,10 @@ class OptionsOnTopEnv(gym.Env):
 
         return obs, info
 
-    def _bc_one_step_for_active(self, frame_uint8: np.ndarray) -> int:
+    def _bc_one_step_for_active(self, obs: np.ndarray) -> int:
         """
         Compute exactly ONE primitive action from BC for the active option instance.
+        obs: can be PCA features (1D) or image (3D), bc_policy_hierarchy handles both.
         """
         assert self.active_option_idx is not None
         assert self.active_call_id is not None
@@ -179,7 +189,7 @@ class OptionsOnTopEnv(gym.Env):
         prim = int(
             bc_policy_hierarchy(
                 self.models,
-                frame_uint8,
+                obs,
                 skill_name,
                 self.active_call_id,
                 max_leaf_len=self.max_skill_len,  # per-leaf cap
@@ -215,12 +225,10 @@ class OptionsOnTopEnv(gym.Env):
                 self.active_call_id = new_call_id(self.models)  # unique instance id
                 skill_name = self.skills[self.active_option_idx]
                 self.option_steps_left = self._skill_budget(skill_name)  # total budget for this macro
-                frame = self._as_uint8_frame(self.current_obs)
-                prim_action = self._bc_one_step_for_active(frame)
+                prim_action = self._bc_one_step_for_active(self.current_obs)
         else:
             # Option is active → ignore 'a' (mask only exposes the same option anyway)
-            frame = self._as_uint8_frame(self.current_obs)
-            prim_action = self._bc_one_step_for_active(frame)
+            prim_action = self._bc_one_step_for_active(self.current_obs)
 
         # ---- exactly one primitive env step ----
         obs, r, terminated, truncated, info = self.env.step(prim_action)
@@ -236,7 +244,8 @@ class OptionsOnTopEnv(gym.Env):
                 stop = True
             else:
                 skill_name = self.skills[self.active_option_idx]
-                if should_terminate(self.models, self._as_uint8_frame(obs), skill_name, self.active_call_id):
+                # should_terminate now handles both PCA features (1D) and images (3D)
+                if should_terminate(self.models, obs, skill_name, self.active_call_id):
                     stop = True
                 elif self.option_steps_left <= 0:
                     stop = True

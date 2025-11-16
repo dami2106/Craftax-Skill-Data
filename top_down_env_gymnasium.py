@@ -7,6 +7,8 @@ from craftax.craftax_env import make_craftax_env_from_name
 from helpers import get_top_down_obs
 from typing import List, Sequence  # <-- added
 import imageio
+import os
+import joblib
 
 class CraftaxTopDownEnv(gym.Env):
     """
@@ -33,9 +35,32 @@ class CraftaxTopDownEnv(gym.Env):
         done_item: str | None = None,
         include_base_reward: bool = False,
         return_uint8: bool = True,  # <--- added (SB3 friendly)
+        pca_model_path: str | None = None,  # Path to PCA model, e.g., 'Traces/stone_pick_static/pca_models/pca_model_650.joblib'
+        use_pca: bool = True,  # Whether to use PCA features instead of raw images
     ):
         super().__init__()
         self.return_uint8 = return_uint8
+        self.use_pca = use_pca
+        
+        # Load PCA model if using PCA
+        self.pca = None
+        self.scaler = None
+        self.pca_n_components = None
+        if self.use_pca:
+            if pca_model_path is None:
+                # Default path
+                pca_model_path = os.path.join(os.path.dirname(__file__), 'Traces/stone_pick_static/pca_models/pca_model_650.joblib')
+            if not os.path.isabs(pca_model_path):
+                pca_model_path = os.path.join(os.path.dirname(__file__), pca_model_path)
+            
+            if not os.path.exists(pca_model_path):
+                raise FileNotFoundError(f"PCA model not found at: {pca_model_path}")
+            
+            artifacts = joblib.load(pca_model_path)
+            self.scaler = artifacts['scaler']
+            self.pca = artifacts['pca']
+            self.pca_n_components = self.pca.n_components_
+            print(f"Loaded PCA model: {pca_model_path}, components={self.pca_n_components}")
 
         # --- Base Craftax env
         self.env = make_craftax_env_from_name("Craftax-Classic-Pixels-v1", auto_reset=False)
@@ -69,15 +94,23 @@ class CraftaxTopDownEnv(gym.Env):
         top_down = get_top_down_obs(state, obs.copy())
         self.state = state
 
-        if self.return_uint8:
-            obs_shape = top_down.shape
+        # Determine observation space based on whether using PCA
+        if self.use_pca and self.pca is not None:
+            # Use PCA feature space
             self.observation_space = spaces.Box(
-                low=0, high=255, shape=obs_shape, dtype=np.uint8
+                low=-np.inf, high=np.inf, shape=(self.pca_n_components,), dtype=np.float32
             )
         else:
-            self.observation_space = spaces.Box(
-                low=0, high=1, shape=top_down.shape, dtype=np.float32
-            )
+            # Use raw image space
+            if self.return_uint8:
+                obs_shape = top_down.shape
+                self.observation_space = spaces.Box(
+                    low=0, high=255, shape=obs_shape, dtype=np.uint8
+                )
+            else:
+                self.observation_space = spaces.Box(
+                    low=0, high=1, shape=top_down.shape, dtype=np.float32
+                )
 
         # --- Action mapping: expose only actions 0..16
         allowed_actions = list(range(17))
@@ -121,6 +154,30 @@ class CraftaxTopDownEnv(gym.Env):
         else:
             self.prev_wood_count = None
 
+    def _transform_obs(self, top_down):
+        """Transform observation through PCA if enabled, otherwise return as-is."""
+        if self.use_pca and self.pca is not None and self.scaler is not None:
+            # Convert to float32 and normalize if uint8
+            obs = np.asarray(top_down, dtype=np.float32)
+            if obs.max() > 1.0:
+                obs = obs / 255.0
+            
+            # Flatten to (1, features)
+            X = obs.reshape(1, -1)
+            
+            # Apply scaler (mean centering) and PCA
+            X_centered = self.scaler.transform(X)
+            X_pca = self.pca.transform(X_centered)
+            
+            # Return as 1D array
+            return X_pca[0].astype(np.float32)
+        else:
+            # Return raw observation
+            if self.return_uint8:
+                return (np.clip(top_down, 0, 1) * 255).astype(np.uint8)
+            else:
+                return top_down.astype(np.float32)
+
     # ---------- Gymnasium API ----------
     def reset(self, *, seed: int | None = None, options=None):
         if seed is not None:
@@ -135,13 +192,14 @@ class CraftaxTopDownEnv(gym.Env):
         self.rng, reset_key = jax.random.split(self.rng)
         obs, self.state = self.env.reset(reset_key, self.env_params)
         top_down = get_top_down_obs(self.state, obs.copy())
-        if self.return_uint8:
-            top_down = (np.clip(top_down, 0, 1) * 255).astype(np.uint8)
+        
+        # Transform observation (PCA or raw)
+        transformed_obs = self._transform_obs(top_down)
 
         self._init_inventory_counters()
 
         info = {}
-        return top_down, info
+        return transformed_obs, info
 
     def step(self, action):
         if not np.isscalar(action):
@@ -158,8 +216,9 @@ class CraftaxTopDownEnv(gym.Env):
             step_key, self.state, raw_action, self.env_params
         )
         top_down = get_top_down_obs(self.state, obs.copy())
-        if self.return_uint8:
-            top_down = (np.clip(top_down, 0, 1) * 255).astype(np.uint8)
+        
+        # Transform observation (PCA or raw)
+        transformed_obs = self._transform_obs(top_down)
 
         # --- Custom reward calculation
         reward_gain = 0
@@ -213,7 +272,7 @@ class CraftaxTopDownEnv(gym.Env):
         if self.done_item:
             info["done_item_increment"] = done_increment
 
-        return top_down, float(reward_gain), terminated, truncated, info
+        return transformed_obs, float(reward_gain), terminated, truncated, info
 
     def render(self):
         if self.render_mode == "rgb_array":

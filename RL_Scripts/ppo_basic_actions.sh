@@ -9,7 +9,8 @@ conda activate SOTA
 
 # Define your list of seeds
 # seeds=(888 0 333 9 42)
-seeds=(2106 1 404 1408 506)
+# seeds=(2106 1 404 1408 506)
+seeds=(888 0 333 9 42 2106 1 404 1408 506)
 
 # Loop through each seed
 for seed in "${seeds[@]}"; do

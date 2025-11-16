@@ -10,7 +10,10 @@ conda activate SOTA
 
 # Define your list of seeds
 # seeds=(888 0 333 9 42)
-seeds=(2106 1 404 1408 506)
+# seeds=(2106 1 404 1408 506)
+
+seeds=(888 0 333 9 42 2106 1 404 1408 506)
+
 
 # Loop through each seed
 for seed in "${seeds[@]}"; do
@@ -18,7 +21,7 @@ for seed in "${seeds[@]}"; do
     echo "Starting PPO training with seed: $seed"
     echo "=========================================="
 
-    python ppo_skills.py --skill_list 0 1 2 3 4 --root Traces/stone_pick_static --bc_checkpoint_dir bc_checkpoints_asot\
+    python ppo_skills.py --skill_list 0 1 2 3 4 --root Traces/stone_pick_static --bc_checkpoint_dir bc_checkpoints_pca_asot\
     --pca_model_path pca_models/pca_model_650.joblib --pu_start_models_dir pu_start_models_asot --pu_end_models_dir pu_end_models_asot --run_name ppo_options_asot --ppo_seed "$seed"
 
 

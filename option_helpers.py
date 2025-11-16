@@ -95,13 +95,50 @@ class ResNetPolicy(torch.nn.Module):
         return self.backbone(x)
 
 
+# ---------- PCA MLP policy (for PCA-based BC) ----------
+class PCAPolicy(torch.nn.Module):
+    """
+    Small MLP for non-linear action prediction from PCA features.
+    Allows the model to learn non-linear decision boundaries in PCA space.
+    """
+    def __init__(self, z_dim, n_actions):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(z_dim, 256),
+            torch.nn.ReLU(),
+            torch.nn.Linear(256, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, n_actions),
+        )
+
+    def forward(self, z):
+        return self.net(z)  # logits over n_actions
+
+
+class PCAFeatureNormalizer:
+    """
+    Normalizes PCA features using given mean/std (float32).
+    """
+    def __init__(self, mean_vec, std_vec):
+        self.mean = torch.from_numpy(mean_vec).float()  # [D]
+        self.std = torch.from_numpy(std_vec).float()
+        self.std = torch.clamp(self.std, min=1e-3)
+
+    def __call__(self, x):
+        # x: [D] or [B, D]
+        return (x - self.mean) / self.std
+
+
 # ---------- Model builder that understands both checkpoint formats ----------
 def _parse_arch(ckpt):
     """
     Returns ('resnet18' or 'resnet34', 'resnet') for new checkpoints,
+    ('pca_mlp', 'pca') for PCA MLP checkpoints,
     or ('legacy', 'cnn') for old ones without arch info.
     """
     arch = ckpt.get('arch', '')
+    if arch == 'PCAPolicy_MLP' or arch.startswith('PCAPolicy'):
+        return 'pca_mlp', 'pca'
     if arch.startswith('ResNetPolicy_'):
         parts = arch.split('_')
         if len(parts) >= 2 and parts[1] in ('resnet18', 'resnet34'):
@@ -111,9 +148,12 @@ def _parse_arch(ckpt):
 
 def _build_model_from_ckpt(ckpt, device):
     n_actions = int(ckpt.get('n_actions', 16))
-    backbone, kind = _parse_arch(ckpt)
-    if kind == 'resnet':
-        model = ResNetPolicy(n_actions=n_actions, backbone=backbone).to(device)
+    arch_name, kind = _parse_arch(ckpt)
+    if kind == 'pca':
+        feature_dim = int(ckpt.get('feature_dim', 650))
+        model = PCAPolicy(z_dim=feature_dim, n_actions=n_actions).to(device)
+    elif kind == 'resnet':
+        model = ResNetPolicy(n_actions=n_actions, backbone=arch_name).to(device)
     else:
         model = PolicyCNN(n_actions=n_actions).to(device)
     model.load_state_dict(ckpt['state_dict'], strict=True)
@@ -141,16 +181,27 @@ def preprocess_frame(frame_hw3, normalizer, target=256):
 def load_policy(ckpt_path, device=None):
     """
     Load model + normalizer from a saved training checkpoint.
-    Backward-compatible with legacy CNN checkpoints and new ResNet checkpoints.
+    Backward-compatible with legacy CNN checkpoints, ResNet checkpoints, and PCA MLP checkpoints.
     """
     device = device or torch.device('cuda' if torch.cuda.is_available() else
                                     ('mps' if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available() else 'cpu'))
     ckpt = torch.load(ckpt_path, map_location=device)
 
     model, n_actions = _build_model_from_ckpt(ckpt, device)
-    mean = ckpt.get('mean', (0.485, 0.456, 0.406))
-    std  = ckpt.get('std',  (0.229, 0.224, 0.225))
-    normalizer = ImageNormalizer(mean, std)
+    arch_name, kind = _parse_arch(ckpt)
+    
+    if kind == 'pca':
+        # PCA MLP checkpoint: use PCAFeatureNormalizer
+        mean = ckpt.get('mean')
+        std = ckpt.get('std')
+        if mean is None or std is None:
+            raise ValueError(f"PCA checkpoint {ckpt_path} missing 'mean' or 'std' keys")
+        normalizer = PCAFeatureNormalizer(mean, std)
+    else:
+        # Image-based checkpoint: use ImageNormalizer
+        mean = ckpt.get('mean', (0.485, 0.456, 0.406))
+        std  = ckpt.get('std',  (0.229, 0.224, 0.225))
+        normalizer = ImageNormalizer(mean, std)
 
     return model, normalizer, device, n_actions
 
@@ -175,11 +226,70 @@ def act_sample(model, normalizer, device, frame_hw3, temperature=1.0, target=256
     return action, probs.detach().cpu().numpy()
 
 
+@torch.no_grad()
+def act_greedy_pca(model, normalizer, device, pca_features):
+    """
+    Greedy action selection for PCA-based models.
+    pca_features: numpy array of shape [D] or [1, D] (PCA feature vector)
+    """
+    if isinstance(pca_features, np.ndarray):
+        x = torch.from_numpy(pca_features).float()
+    else:
+        x = pca_features.float()
+    
+    # Ensure shape is [1, D]
+    if x.ndim == 1:
+        x = x.unsqueeze(0)
+    
+    # Normalize
+    x = normalizer(x)
+    x = x.to(device)
+    
+    # Forward pass
+    logits = model(x)
+    probs = torch.softmax(logits, dim=-1).squeeze(0)
+    action = int(torch.argmax(probs).item())
+    return action, probs.detach().cpu().numpy()
+
+
 def bc_policy(models, state, skill):
-    assert state.max() > 1.0  # allow uint8 input
-    state = np.asarray(state).astype(np.float32) / 255.0
-    model, normalizer, device, n_actions = models["bc_models"][skill]
-    action, _ = act_greedy(model, normalizer, device, state)
+    """
+    Behavioral cloning policy. Works with both image-based and PCA-based models.
+    For PCA models, state should be PCA features (1D array).
+    For image models, state should be HxWx3 image.
+    """
+    entry = models["bc_models"][skill]
+    model, normalizer, device, n_actions = entry
+    
+    # Check if this is a PCA model by checking if normalizer is PCAFeatureNormalizer
+    is_pca = isinstance(normalizer, PCAFeatureNormalizer)
+    
+    if is_pca:
+        # State is already PCA features (from environment)
+        # Ensure it's a numpy array
+        if isinstance(state, torch.Tensor):
+            state = state.cpu().numpy()
+        state = np.asarray(state, dtype=np.float32)
+        
+        # If state is 2D (HxWx3 image), convert to PCA features
+        if state.ndim == 3:
+            # Convert image to PCA features
+            X = state.reshape(1, -1).astype(np.float32)
+            if state.max() > 1.0:
+                X = X / 255.0
+            X_centered = models["pca_model"]['scaler'].transform(X)
+            X_pca = models["pca_model"]['pca'].transform(X_centered)
+            state = X_pca[0]
+        elif state.ndim == 2 and state.shape[0] == 1:
+            state = state[0]
+        
+        action, _ = act_greedy_pca(model, normalizer, device, state)
+    else:
+        # Image-based model: expect HxWx3 image
+        assert state.max() > 1.0  # allow uint8 input
+        state = np.asarray(state).astype(np.float32) / 255.0
+        action, _ = act_greedy(model, normalizer, device, state)
+    
     return action
 
 
@@ -270,13 +380,17 @@ def predict_pu_end_state(model: dict, state) -> dict:
 # ---------- PCA + model bank loaders ----------
 def load_all_models(skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickaxe', 'table'],
                     root: str = 'Traces/stone_pickaxe_easy',
-                    bc_checkpoint_dir: str = 'bc_checkpoints_resnet',
+                    bc_checkpoint_dir: str = 'bc_checkpoints_pca',
                     pca_model_path: str = 'pca_models/pca_model_750.joblib',
                     pu_start_models_dir: str = 'pu_start_models',
                     pu_end_models_dir: str = 'pu_end_models'):
     bc_models = {}
     for skill in skill_list:
-        ckpt_path = os.path.join(root, bc_checkpoint_dir, f'{skill}_policy_resnet34_pt.pt')
+        # Try PCA MLP checkpoint first
+        ckpt_path = os.path.join(root, bc_checkpoint_dir, f'{skill}_pca_mlp_policy.pt')
+        if not os.path.exists(ckpt_path):
+            # Fallback to old naming convention
+            ckpt_path = os.path.join(root, bc_checkpoint_dir, f'{skill}_policy_resnet34_pt.pt')
         bc_models[skill] = load_policy(ckpt_path)
 
     artifacts = joblib.load(os.path.join(root, pca_model_path))
@@ -303,14 +417,25 @@ def load_all_models(skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickax
 
 
 def available_skills(models, state):
-    # state: uint8 or float32 flat vector -> PCA space
+    """
+    Determine which skills are available given the current state.
+    state: can be PCA features (1D array) or HxWx3 image
+    """
     state = np.asarray(state).astype(np.float32)
-    if state.max() > 1.0:  # allow uint8 input
-        state = state / 255.0
-
-    X = state.reshape(1, -1)
-    Xc = models["pca_model"]['scaler'].transform(X)
-    Xf = models["pca_model"]['pca'].transform(Xc)
+    
+    # If state is already PCA features (1D), use directly
+    if state.ndim == 1:
+        Xf = state.reshape(1, -1)
+    elif state.ndim == 3:
+        # Image input: convert to PCA features
+        if state.max() > 1.0:
+            state = state / 255.0
+        X = state.reshape(1, -1)
+        Xc = models["pca_model"]['scaler'].transform(X)
+        Xf = models["pca_model"]['pca'].transform(Xc)
+    else:
+        # Already in correct shape (1, D) or (B, D)
+        Xf = state if state.ndim == 2 else state.reshape(1, -1)
 
     rows = applicable_pu_start_models(models["start_models"], Xf, return_details=True, eps=0.0)
     applicable = {r["skill"] for r in rows if r["applicable"]}
@@ -443,10 +568,26 @@ def should_terminate(models, state, skill, call_id: Optional[int] = None):
 
 
 def _primitive_should_terminate(models, state, skill) -> bool:
-    state = np.asarray(state).astype(np.float32) / 255.0
-    X = state.reshape(1, -1)
-    X_centered = models["pca_model"]['scaler'].transform(X)
-    X_feats = models["pca_model"]['pca'].transform(X_centered)
+    """
+    Check if a primitive skill should terminate.
+    state: can be PCA features (1D array) or HxWx3 image
+    """
+    state = np.asarray(state).astype(np.float32)
+    
+    # If state is already PCA features (1D), use directly
+    if state.ndim == 1:
+        X_feats = state.reshape(1, -1)
+    elif state.ndim == 3:
+        # Image input: convert to PCA features
+        if state.max() > 1.0:
+            state = state / 255.0
+        X = state.reshape(1, -1)
+        X_centered = models["pca_model"]['scaler'].transform(X)
+        X_feats = models["pca_model"]['pca'].transform(X_centered)
+    else:
+        # Already in correct shape
+        X_feats = state if state.ndim == 2 else state.reshape(1, -1)
+    
     tm = models["termination_models"].get(skill)
     if tm is None:
         # No end model: never terminate based on classifier
@@ -473,7 +614,7 @@ def bc_policy_hierarchy(models, state, skill, call_id: Optional[int] = None, max
                 rt["leaf_steps"] = 0
                 leaf_steps = 0
 
-        # If a per-leaf cap is set and we’ve spent it, force advance
+        # If a per-leaf cap is set and we've spent it, force advance
         if max_leaf_len is not None and idx < len(seq) and leaf_steps >= max_leaf_len:
             idx += 1
             rt["idx"] = idx
@@ -491,12 +632,8 @@ def bc_policy_hierarchy(models, state, skill, call_id: Optional[int] = None, max
 
         return bc_policy(models, state, cur)
 
-    # primitive case unchanged
-    state = np.asarray(state)
-    assert state.ndim == 3 and state.shape[-1] == 3, "state must be HxWx3"
-    model, normalizer, device, n_actions = entry
-    action, _ = act_greedy(model, normalizer, device, state)
-    return action
+    # primitive case: use bc_policy which handles both PCA and image models
+    return bc_policy(models, state, skill)
 
 
 # ===== Hierarchy building utilities =====
@@ -630,7 +767,7 @@ def load_all_models_hierarchy(
     symbol_map:     Optional[Dict[str, str]] = None,
     root:           str = 'Traces/stone_pickaxe_easy',
     backbone_hint:  str = 'resnet34',
-    bc_checkpoint_dir: str = 'bc_checkpoints_resnet',
+    bc_checkpoint_dir: str = 'bc_checkpoints_pca',
     pca_model_path: str = 'pca_models/pca_model_750.joblib',
     pu_start_models_dir: str = 'pu_start_models',
     pu_end_models_dir: str = 'pu_end_models',
@@ -639,6 +776,11 @@ def load_all_models_hierarchy(
     bc_models = {}
 
     def _find_ckpt(skill: str) -> str:
+        # Try PCA MLP checkpoint first
+        cand = os.path.join(ckpt_dir, f'{skill}_pca_mlp_policy.pt')
+        if os.path.exists(cand):
+            return cand
+        # Fallback to old naming conventions
         cand = os.path.join(ckpt_dir, f'{skill}_policy_{backbone_hint}_pt.pt')
         if os.path.exists(cand):
             return cand
@@ -650,7 +792,7 @@ def load_all_models_hierarchy(
             return legacy
         raise FileNotFoundError(
             f"No checkpoint found for skill '{skill}'. "
-            f"Tried '{cand}', any resnet*, and legacy '{legacy}'."
+            f"Tried '{os.path.join(ckpt_dir, f'{skill}_pca_mlp_policy.pt')}', '{cand}', any resnet*, and legacy '{legacy}'."
         )
 
     for skill in skill_list:

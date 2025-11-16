@@ -18,10 +18,14 @@ from option_helpers import FixedSeedAlways, to_gif_frame
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--ppo_seed", type=int, default=888)
+parser.add_argument("--pca_model_path", type=str, default="Traces/stone_pick_static/pca_models/pca_model_650.joblib", help="Path to PCA model")
+parser.add_argument("--use_pca", type=str, default="True", help="Whether to use PCA features (default: True). Use 'True' or 'False'")
 
 args, _ = parser.parse_known_args()
+# Convert string to boolean
+args.use_pca = args.use_pca.lower() in ['true', '1', 'yes']
 
-def make_env(seed: int):
+def make_env(seed: int, pca_model_path: str, use_pca: bool):
     def _thunk():
         env = CraftaxTopDownEnv(
             seed=seed,               # initialize env RNG deterministically
@@ -29,6 +33,8 @@ def make_env(seed: int):
             reward_items=[],
             done_item="wood_pickaxe",
             include_base_reward=False,
+            pca_model_path=pca_model_path,
+            use_pca=use_pca,
         )
         env = TimeLimit(env, max_episode_steps=100)
         env = FixedSeedAlways(env, seed=seed)  # keep the SAME seed every reset
@@ -38,16 +44,24 @@ def make_env(seed: int):
 if __name__ == "__main__":
     SEED = 888  # single training seed; every episode uses this seed
 
-    train_env = DummyVecEnv([make_env(seed=SEED)])
-    train_env = VecTransposeImage(train_env)  # HWC -> CHW for CnnPolicy
+    train_env = DummyVecEnv([make_env(seed=SEED, pca_model_path=args.pca_model_path, use_pca=args.use_pca)])
+    
+    # Only use VecTransposeImage if not using PCA (for raw images with CnnPolicy)
+    if not args.use_pca:
+        train_env = VecTransposeImage(train_env)  # HWC -> CHW for CnnPolicy
+    
     train_env = VecMonitor(train_env)
 
     # model = PPO.load("ppo_craftax_wood_ppo_actions")
 
     print ("Training PPO on basic actions to get wood_pickaxe SEED : ", args.ppo_seed)
+    print (f"Using PCA: {args.use_pca}, PCA model path: {args.pca_model_path}")
 
+    # Use MlpPolicy for PCA features, CnnPolicy for raw images
+    policy_type = "MlpPolicy" if args.use_pca else "CnnPolicy"
+    
     model = PPO(
-        policy="CnnPolicy",
+        policy=policy_type,
         env=train_env,
         seed=args.ppo_seed,  # set SB3/torch RNGs too for full determinism
         verbose=1,
@@ -57,7 +71,7 @@ if __name__ == "__main__":
     )
 
     model.learn(
-        total_timesteps=100_000,
+        total_timesteps=250_000,
         log_interval=1,
         tb_log_name="ppo_wood_pick_actions",
         progress_bar=True,
