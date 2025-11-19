@@ -170,6 +170,9 @@ class OptionsOnTopEnv(gym.Env):
             self.models["composite_runtime"].clear()
         if "call_id_ctr" in self.models:
             self.models["call_id_ctr"] = 0
+        # Clear recurrent state for all skills
+        if "recurrent_state" in self.models:
+            self.models["recurrent_state"].clear()
 
         # Clear commitment
         self.active_option_idx = None
@@ -251,6 +254,14 @@ class OptionsOnTopEnv(gym.Env):
                     stop = True
 
             if stop:
+                # Clear recurrent state for this skill when option terminates
+                if "recurrent_state" in self.models and skill_name in self.models["recurrent_state"]:
+                    if self.active_call_id is not None:
+                        key = str(self.active_call_id)
+                        if key in self.models["recurrent_state"][skill_name]:
+                            self.models["recurrent_state"][skill_name].pop(key)
+                    else:
+                        self.models["recurrent_state"][skill_name].clear()
                 # Clear commitment
                 self.active_option_idx = None
                 self.active_call_id = None

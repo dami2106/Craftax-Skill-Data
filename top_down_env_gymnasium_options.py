@@ -134,6 +134,9 @@ class OptionsOnTopEnv(gym.Env):
         # Clear any active option at episode start
         self.active_option_idx = None
         self.option_steps_left = 0
+        # Clear recurrent state for all skills
+        if "recurrent_state" in self.models:
+            self.models["recurrent_state"].clear()
         return obs, info
 
     def _bc_one_step_for_active(self, obs):
@@ -201,6 +204,9 @@ class OptionsOnTopEnv(gym.Env):
                     should_stop = True
 
             if should_stop:
+                # Clear recurrent state for this skill when option terminates
+                if "recurrent_state" in self.models and skill_name in self.models["recurrent_state"]:
+                    self.models["recurrent_state"][skill_name].clear()
                 self.active_option_idx = None
                 self.option_steps_left = 0
 

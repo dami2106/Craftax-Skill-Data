@@ -115,6 +115,40 @@ class PCAPolicy(torch.nn.Module):
         return self.net(z)  # logits over n_actions
 
 
+# ---------- GRU PCA policy (for recurrent PCA-based BC) ----------
+class GRUPCAPolicy(torch.nn.Module):
+    """
+    GRU-based recurrent policy for PCA features.
+    Takes sequences of PCA features and outputs action logits.
+    """
+    def __init__(self, z_dim, n_actions, hidden_size=256, num_layers=1, dropout=0.1):
+        super().__init__()
+        gru_dropout = dropout if num_layers > 1 else 0.0
+        self.gru = torch.nn.GRU(
+            input_size=z_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=gru_dropout,
+        )
+        self.head = torch.nn.Linear(hidden_size, n_actions)
+
+    def forward(self, seqs, hidden=None):
+        """
+        seqs: [batch, seq_len, z_dim] or [seq_len, z_dim] (single sequence)
+        hidden: optional hidden state from previous step
+        Returns: (logits, hidden_state)
+        """
+        # Handle single sequence (no batch dim)
+        if seqs.ndim == 2:
+            seqs = seqs.unsqueeze(0)  # [1, seq_len, z_dim]
+        
+        out, h_n = self.gru(seqs, hidden)
+        last_hidden = h_n[-1]  # [num_layers, batch, hidden_size] -> take last layer
+        logits = self.head(last_hidden)
+        return logits, h_n
+
+
 class PCAFeatureNormalizer:
     """
     Normalizes PCA features using given mean/std (float32).
@@ -134,9 +168,12 @@ def _parse_arch(ckpt):
     """
     Returns ('resnet18' or 'resnet34', 'resnet') for new checkpoints,
     ('pca_mlp', 'pca') for PCA MLP checkpoints,
+    ('gru_pca', 'gru_pca') for GRU PCA recurrent checkpoints,
     or ('legacy', 'cnn') for old ones without arch info.
     """
     arch = ckpt.get('arch', '')
+    if arch == 'GRUPCABehaviorPolicy':
+        return 'gru_pca', 'gru_pca'
     if arch == 'PCAPolicy_MLP' or arch.startswith('PCAPolicy'):
         return 'pca_mlp', 'pca'
     if arch.startswith('ResNetPolicy_'):
@@ -149,7 +186,19 @@ def _parse_arch(ckpt):
 def _build_model_from_ckpt(ckpt, device):
     n_actions = int(ckpt.get('n_actions', 16))
     arch_name, kind = _parse_arch(ckpt)
-    if kind == 'pca':
+    if kind == 'gru_pca':
+        feature_dim = int(ckpt.get('feature_dim', 650))
+        hidden_size = int(ckpt.get('hidden_size', 256))
+        num_layers = int(ckpt.get('num_layers', 1))
+        dropout = float(ckpt.get('dropout', 0.1))
+        model = GRUPCAPolicy(
+            z_dim=feature_dim,
+            n_actions=n_actions,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+        ).to(device)
+    elif kind == 'pca':
         feature_dim = int(ckpt.get('feature_dim', 650))
         model = PCAPolicy(z_dim=feature_dim, n_actions=n_actions).to(device)
     elif kind == 'resnet':
@@ -181,7 +230,9 @@ def preprocess_frame(frame_hw3, normalizer, target=256):
 def load_policy(ckpt_path, device=None):
     """
     Load model + normalizer from a saved training checkpoint.
-    Backward-compatible with legacy CNN checkpoints, ResNet checkpoints, and PCA MLP checkpoints.
+    Backward-compatible with legacy CNN checkpoints, ResNet checkpoints, PCA MLP checkpoints, and GRU PCA checkpoints.
+    Returns: (model, normalizer, device, n_actions, seq_len)
+    - seq_len is None for non-recurrent models, or the sequence length for GRU models
     """
     device = device or torch.device('cuda' if torch.cuda.is_available() else
                                     ('mps' if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available() else 'cpu'))
@@ -190,7 +241,16 @@ def load_policy(ckpt_path, device=None):
     model, n_actions = _build_model_from_ckpt(ckpt, device)
     arch_name, kind = _parse_arch(ckpt)
     
-    if kind == 'pca':
+    seq_len = None
+    if kind == 'gru_pca':
+        # GRU PCA checkpoint: use PCAFeatureNormalizer, extract seq_len
+        mean = ckpt.get('mean')
+        std = ckpt.get('std')
+        if mean is None or std is None:
+            raise ValueError(f"GRU PCA checkpoint {ckpt_path} missing 'mean' or 'std' keys")
+        normalizer = PCAFeatureNormalizer(mean, std)
+        seq_len = int(ckpt.get('seq_len', 8))  # default to 8 if not found
+    elif kind == 'pca':
         # PCA MLP checkpoint: use PCAFeatureNormalizer
         mean = ckpt.get('mean')
         std = ckpt.get('std')
@@ -203,7 +263,7 @@ def load_policy(ckpt_path, device=None):
         std  = ckpt.get('std',  (0.229, 0.224, 0.225))
         normalizer = ImageNormalizer(mean, std)
 
-    return model, normalizer, device, n_actions
+    return model, normalizer, device, n_actions, seq_len
 
 
 @torch.no_grad()
@@ -227,42 +287,124 @@ def act_sample(model, normalizer, device, frame_hw3, temperature=1.0, target=256
 
 
 @torch.no_grad()
-def act_greedy_pca(model, normalizer, device, pca_features):
+def act_greedy_pca(model, normalizer, device, pca_features, seq_buffer=None, hidden_ref=None):
     """
-    Greedy action selection for PCA-based models.
+    Greedy action selection for PCA-based models (both MLP and GRU).
     pca_features: numpy array of shape [D] or [1, D] (PCA feature vector)
+    seq_buffer: optional list of previous features for GRU models (will be updated in-place)
+    hidden_ref: optional dict with "hidden" key for GRU models (will be updated in-place)
+    Returns: (action, probs, new_hidden) where new_hidden is None for MLP models
     """
     if isinstance(pca_features, np.ndarray):
-        x = torch.from_numpy(pca_features).float()
+        x = pca_features
     else:
-        x = pca_features.float()
+        x = pca_features.cpu().numpy() if isinstance(pca_features, torch.Tensor) else pca_features
     
-    # Ensure shape is [1, D]
-    if x.ndim == 1:
-        x = x.unsqueeze(0)
+    # Ensure 1D
+    if x.ndim > 1:
+        x = x.flatten()
+    x = np.asarray(x, dtype=np.float32)
     
-    # Normalize
-    x = normalizer(x)
-    x = x.to(device)
+    # Check if this is a GRU model
+    is_gru = isinstance(model, GRUPCAPolicy)
     
-    # Forward pass
-    logits = model(x)
-    probs = torch.softmax(logits, dim=-1).squeeze(0)
-    action = int(torch.argmax(probs).item())
-    return action, probs.detach().cpu().numpy()
+    if is_gru:
+        # GRU model: need sequence buffer
+        if seq_buffer is None:
+            raise ValueError("GRU model requires seq_buffer for recurrent inference")
+        
+        # Build sequence tensor from buffer (buffer should already contain current observation)
+        if len(seq_buffer) == 0:
+            raise ValueError("GRU sequence buffer is empty")
+        seq_array = np.array(seq_buffer, dtype=np.float32)  # [seq_len, D]
+        seq_tensor = torch.from_numpy(seq_array).float()  # [seq_len, D]
+        
+        # Normalize each timestep
+        seq_tensor = normalizer(seq_tensor)  # [seq_len, D]
+        seq_tensor = seq_tensor.to(device)
+        
+        # Get current hidden state
+        hidden = hidden_ref["hidden"] if hidden_ref is not None and hidden_ref.get("hidden") is not None else None
+        
+        # Forward pass with hidden state
+        logits, new_hidden = model(seq_tensor.unsqueeze(0), hidden)  # [1, seq_len, D] -> [1, n_actions]
+        
+        # Update hidden state reference
+        if hidden_ref is not None:
+            hidden_ref["hidden"] = new_hidden
+        
+        probs = torch.softmax(logits, dim=-1).squeeze(0)
+        action = int(torch.argmax(probs).item())
+        return action, probs.detach().cpu().numpy(), new_hidden
+    else:
+        # MLP model: single timestep
+        x_tensor = torch.from_numpy(x).float().unsqueeze(0)  # [1, D]
+        
+        # Normalize
+        x_tensor = normalizer(x_tensor)
+        x_tensor = x_tensor.to(device)
+        
+        # Forward pass
+        logits = model(x_tensor)
+        probs = torch.softmax(logits, dim=-1).squeeze(0)
+        action = int(torch.argmax(probs).item())
+        return action, probs.detach().cpu().numpy(), None
 
 
-def bc_policy(models, state, skill):
+# ---------- Recurrent state management ----------
+def _ensure_recurrent_state(models):
+    """Initialize recurrent state storage if not present."""
+    if "recurrent_state" not in models:
+        models["recurrent_state"] = {}  # {skill: {call_id: {"seq_buffer": [], "hidden": None}}}
+
+
+def _get_recurrent_state(models, skill, call_id=None):
     """
-    Behavioral cloning policy. Works with both image-based and PCA-based models.
+    Get or create recurrent state for a skill/call_id combination.
+    Returns: (seq_buffer, hidden_ref) where hidden_ref is a list to store hidden state
+    """
+    _ensure_recurrent_state(models)
+    key = str(call_id) if call_id is not None else "_default_"
+    if skill not in models["recurrent_state"]:
+        models["recurrent_state"][skill] = {}
+    if key not in models["recurrent_state"][skill]:
+        models["recurrent_state"][skill][key] = {
+            "seq_buffer": [],
+            "hidden": None,
+        }
+    rt = models["recurrent_state"][skill][key]
+    return rt["seq_buffer"], rt
+
+
+def _clear_recurrent_state(models, skill, call_id=None):
+    """Clear recurrent state for a skill/call_id."""
+    if "recurrent_state" not in models:
+        return
+    if skill not in models["recurrent_state"]:
+        return
+    key = str(call_id) if call_id is not None else "_default_"
+    models["recurrent_state"][skill].pop(key, None)
+
+
+def bc_policy(models, state, skill, call_id=None):
+    """
+    Behavioral cloning policy. Works with both image-based and PCA-based models (including recurrent GRU).
     For PCA models, state should be PCA features (1D array).
     For image models, state should be HxWx3 image.
+    call_id: optional call ID for maintaining separate recurrent state per option instance.
     """
     entry = models["bc_models"][skill]
-    model, normalizer, device, n_actions = entry
+    # Entry format: (model, normalizer, device, n_actions, seq_len)
+    # For backward compatibility, handle both old (4-tuple) and new (5-tuple) formats
+    if len(entry) == 5:
+        model, normalizer, device, n_actions, seq_len = entry
+    else:
+        model, normalizer, device, n_actions = entry
+        seq_len = None
     
     # Check if this is a PCA model by checking if normalizer is PCAFeatureNormalizer
     is_pca = isinstance(normalizer, PCAFeatureNormalizer)
+    is_gru = isinstance(model, GRUPCAPolicy)
     
     if is_pca:
         # State is already PCA features (from environment)
@@ -283,7 +425,29 @@ def bc_policy(models, state, skill):
         elif state.ndim == 2 and state.shape[0] == 1:
             state = state[0]
         
-        action, _ = act_greedy_pca(model, normalizer, device, state)
+        if is_gru:
+            # GRU model: need sequence buffer and hidden state
+            seq_buffer, rt = _get_recurrent_state(models, skill, call_id)
+            
+            # Maintain sequence buffer of fixed length
+            if seq_len is None:
+                seq_len = 8  # default
+            
+            # Add current state to buffer (before trimming)
+            seq_buffer.append(state.copy())
+            if len(seq_buffer) > seq_len:
+                seq_buffer.pop(0)  # remove oldest
+            
+            # If buffer is shorter than seq_len, pad with the first observation
+            # (this handles the initial steps where we don't have enough history)
+            while len(seq_buffer) < seq_len:
+                seq_buffer.insert(0, seq_buffer[0].copy())
+            
+            # Call act_greedy_pca with recurrent state
+            action, _, _ = act_greedy_pca(model, normalizer, device, state, seq_buffer, rt)
+        else:
+            # MLP model: single timestep
+            action, _, _ = act_greedy_pca(model, normalizer, device, state)
     else:
         # Image-based model: expect HxWx3 image
         assert state.max() > 1.0  # allow uint8 input
@@ -386,11 +550,20 @@ def load_all_models(skill_list = ['wood', 'stone', 'wood_pickaxe', 'stone_pickax
                     pu_end_models_dir: str = 'pu_end_models'):
     bc_models = {}
     for skill in skill_list:
-        # Try PCA MLP checkpoint first
-        ckpt_path = os.path.join(root, bc_checkpoint_dir, f'{skill}_pca_mlp_policy.pt')
-        if not os.path.exists(ckpt_path):
-            # Fallback to old naming convention
-            ckpt_path = os.path.join(root, bc_checkpoint_dir, f'{skill}_policy_resnet34_pt.pt')
+        # Try GRU checkpoint first (recurrent models)
+        ckpt_path = None
+        # Check for GRU checkpoints with pattern: {skill}_gru_seq{seq_len}.pt
+        gru_pattern = os.path.join(root, bc_checkpoint_dir, f'{skill}_gru_seq*.pt')
+        gru_matches = glob.glob(gru_pattern)
+        if gru_matches:
+            # Use the first match (or could sort by seq_len if needed)
+            ckpt_path = sorted(gru_matches)[0]
+        else:
+            # Try PCA MLP checkpoint
+            ckpt_path = os.path.join(root, bc_checkpoint_dir, f'{skill}_pca_mlp_policy.pt')
+            if not os.path.exists(ckpt_path):
+                # Fallback to old naming convention
+                ckpt_path = os.path.join(root, bc_checkpoint_dir, f'{skill}_policy_resnet34_pt.pt')
         bc_models[skill] = load_policy(ckpt_path)
 
     artifacts = joblib.load(os.path.join(root, pca_model_path))
@@ -623,17 +796,17 @@ def bc_policy_hierarchy(models, state, skill, call_id: Optional[int] = None, max
 
         if idx >= len(seq):
             last = seq[-1]
-            return bc_policy(models, state, last)
+            return bc_policy(models, state, last, call_id=call_id)
 
         cur = seq[idx]
         # Count one step on this leaf
         if max_leaf_len is not None:
             rt["leaf_steps"] = leaf_steps + 1
 
-        return bc_policy(models, state, cur)
+        return bc_policy(models, state, cur, call_id=call_id)
 
     # primitive case: use bc_policy which handles both PCA and image models
-    return bc_policy(models, state, skill)
+    return bc_policy(models, state, skill, call_id=call_id)
 
 
 # ===== Hierarchy building utilities =====
@@ -776,7 +949,12 @@ def load_all_models_hierarchy(
     bc_models = {}
 
     def _find_ckpt(skill: str) -> str:
-        # Try PCA MLP checkpoint first
+        # Try GRU checkpoint first (recurrent models) - pattern: {skill}_gru_seq{seq_len}.pt
+        gru_pattern = os.path.join(ckpt_dir, f'{skill}_gru_seq*.pt')
+        gru_matches = glob.glob(gru_pattern)
+        if gru_matches:
+            return sorted(gru_matches)[0]  # Use first match (or could sort by seq_len if needed)
+        # Try PCA MLP checkpoint
         cand = os.path.join(ckpt_dir, f'{skill}_pca_mlp_policy.pt')
         if os.path.exists(cand):
             return cand
@@ -792,7 +970,7 @@ def load_all_models_hierarchy(
             return legacy
         raise FileNotFoundError(
             f"No checkpoint found for skill '{skill}'. "
-            f"Tried '{os.path.join(ckpt_dir, f'{skill}_pca_mlp_policy.pt')}', '{cand}', any resnet*, and legacy '{legacy}'."
+            f"Tried GRU pattern '{gru_pattern}', '{os.path.join(ckpt_dir, f'{skill}_pca_mlp_policy.pt')}', '{cand}', any resnet*, and legacy '{legacy}'."
         )
 
     for skill in skill_list:
