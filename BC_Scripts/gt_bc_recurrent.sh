@@ -13,7 +13,7 @@ conda activate SOTA
 # stone_pickaxe
 # table
 
-for skill in wood wood_pickaxe stone stone_pickaxe table; do
+for skill in wooden_pickaxe; do
     python Skill_Learning/bc_pca_recurrent.py --skill "$skill" --dir 'Traces/stone_pick_static' \
     --skills_name 'groundTruth' --save_dir 'bc_checkpoints_pca_gru_gt' --grid
     echo "Done $skill"

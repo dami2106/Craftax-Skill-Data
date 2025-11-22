@@ -21,8 +21,9 @@ for seed in "${seeds[@]}"; do
     echo "Starting PPO training with seed: $seed"
     echo "=========================================="
 
-    python ppo_skills.py --skill_list 0 1 2 3 4 --root Traces/stone_pick_static --bc_checkpoint_dir bc_checkpoints_pca_compile\
-    --pca_model_path pca_models/pca_model_650.joblib --pu_start_models_dir pu_start_models_compile --pu_end_models_dir pu_end_models_compile --run_name ppo_options_compile --ppo_seed "$seed"
+    python ppo_skills.py --skill_list 0 1 2 3 4 --root Traces/stone_pick_static --bc_checkpoint_dir bc_checkpoints_pca_gru_compile\
+    --pca_model_path pca_models/pca_model_650.joblib --pu_start_models_dir pu_start_models_compile --pu_end_models_dir pu_end_models_compile --run_name ppo_options_compile_"$seed"\
+         --ppo_seed "$seed"
 
 
     echo "Finished run for seed: $seed"
